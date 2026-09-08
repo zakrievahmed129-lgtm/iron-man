@@ -219,11 +219,6 @@ function handleWsConnection(ws) {
                     }
                     break;
 
-                case 'mouse_set_glide':
-                    if (typeof data.glide === 'number') {
-                        sendMouseCommand(`SET_GLIDE ${data.glide.toFixed(3)}`);
-                    }
-                    break;
 
                 case 'mouse_release':
                     sendMouseCommand('RELEASE');

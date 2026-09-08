@@ -37,8 +37,6 @@ const rangeSensitivity = document.getElementById('rangeSensitivity');
 const valSensitivity = document.getElementById('valSensitivity');
 const rangeSmoothing = document.getElementById('rangeSmoothing');
 const valSmoothing = document.getElementById('valSmoothing');
-const rangeGlide = document.getElementById('rangeGlide');
-const valGlide = document.getElementById('valGlide');
 const rangePinchThresh = document.getElementById('rangePinchThresh');
 const valPinchThresh = document.getElementById('valPinchThresh');
 const rangeScrollSpeed = document.getElementById('rangeScrollSpeed');
@@ -83,26 +81,8 @@ let lastSentX = -1;
 let lastSentY = -1;
 let isMouseBridgeReady = false;
 
-// Variables Dynamiques pour Glissement & Prédiction Continue
+// Horodatage de détection
 let lastDetectionTime = 0;
-let prevDetectionTime = 0;
-let prevRawScreenX = screenWidth / 2;
-let prevRawScreenY = screenHeight / 2;
-let handVelocityX = 0;
-let handVelocityY = 0;
-let smoothVelocityX = 0;
-let smoothVelocityY = 0;
-
-// Profils de Glissement Continu (même en lag vidéo)
-const GLIDE_PRESETS = [
-    { label: 'RÉACTIF', csFactor: 0.40, jsFactor: 0.48 },
-    { label: 'DIRECT', csFactor: 0.30, jsFactor: 0.36 },
-    { label: 'SOYEUX', csFactor: 0.20, jsFactor: 0.24 },
-    { label: 'ULTRA FLUIDE', csFactor: 0.13, jsFactor: 0.17 },
-    { label: 'AÉROGLISSEUR', csFactor: 0.07, jsFactor: 0.11 }
-];
-let currentJsGlide = GLIDE_PRESETS[2].jsFactor;
-let currentCsGlide = GLIDE_PRESETS[2].csFactor;
 
 // Profils de Lissage Filtre 1€ Anti-Tremblement
 const SMOOTH_PRESETS = [
@@ -231,19 +211,6 @@ function updateSmoothingProfile() {
     filterY.setCutoffs(preset.minCutoff, preset.beta);
 }
 
-function updateGlideProfile() {
-    if (!rangeGlide) return;
-    const level = parseInt(rangeGlide.value) || 3;
-    const preset = GLIDE_PRESETS[level - 1] || GLIDE_PRESETS[2];
-    if (valGlide) valGlide.textContent = preset.label;
-    currentJsGlide = preset.jsFactor;
-    currentCsGlide = preset.csFactor;
-
-    // Envoi de la consigne au moteur natif C# via WebSocket
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'mouse_set_glide', glide: currentCsGlide }));
-    }
-}
 
 // ============================================================================
 // --- 3. PERSISTANCE EN ARRIÈRE-PLAN (MÊME RÉDUIT !) ---
@@ -379,7 +346,6 @@ function initWebSocket() {
         ws.send(JSON.stringify({ type: 'register', role: 'pc' }));
         console.log('✅ Connecté au serveur A.E.G.I.S');
         startKeepAlive();
-        updateGlideProfile();
     };
 
     ws.onmessage = async (event) => {
@@ -397,8 +363,7 @@ function initWebSocket() {
                     if (data.bridgeReady) {
                         isMouseBridgeReady = true;
                         mouseBridgeDot.className = 'dot connected';
-                        mouseBridgeStatus.textContent = 'SOURIS NATIVE : PRÊTE (166 HZ GLIDE)';
-                        updateGlideProfile();
+                        mouseBridgeStatus.textContent = 'SOURIS NATIVE : PRÊTE (DIRECT 1:1)';
                     }
                     break;
 
@@ -862,24 +827,11 @@ function analyzeHandAndTarget(landmarks, handedness) {
     const rawScreenX = Math.max(0, Math.min(screenWidth, ((boxX - 0.5) * sens + 0.5) * screenWidth));
     const rawScreenY = Math.max(0, Math.min(screenHeight, ((boxY - 0.5) * sens + 0.5) * screenHeight));
 
-    // Filtrage 1-Euro adaptatif
+    // Filtrage 1-Euro adaptatif (Anti-tremblement de haute précision, zéro dérive)
     const filteredX = filterX.filter(rawScreenX, now);
     const filteredY = filterY.filter(rawScreenY, now);
 
-    // Calcul de vitesse
-    if (prevDetectionTime > 0) {
-        const dtDetect = Math.max(8, now - prevDetectionTime);
-        const vx = (filteredX - prevRawScreenX) / dtDetect;
-        const vy = (filteredY - prevRawScreenY) / dtDetect;
-        smoothVelocityX = smoothVelocityX * 0.35 + vx * 0.65;
-        smoothVelocityY = smoothVelocityY * 0.35 + vy * 0.65;
-    }
-
-    prevRawScreenX = filteredX;
-    prevRawScreenY = filteredY;
-    prevDetectionTime = now;
     lastDetectionTime = now;
-
     destCursorX = filteredX;
     destCursorY = filteredY;
 
@@ -1017,31 +969,9 @@ function stepContinuousGlide() {
         smoothCursorX = lockedCursorX;
         smoothCursorY = lockedCursorY;
     } else {
-        // Prédiction dynamique pendant les creux entre deux frames caméra
-        // Si le flux vidéo tourne à 10-15 FPS, la vitesse continue de faire glisser
-        // la cible vers l'avant au lieu de s'arrêter brutalement
-        let extrapolatedTargetX = destCursorX;
-        let extrapolatedTargetY = destCursorY;
-
-        if (timeSinceDetection > 8 && timeSinceDetection < 180) {
-            const decay = Math.max(0, 1.0 - timeSinceDetection / 200);
-            extrapolatedTargetX += smoothVelocityX * timeSinceDetection * 0.45 * decay;
-            extrapolatedTargetY += smoothVelocityY * timeSinceDetection * 0.45 * decay;
-        }
-
-        const dx = extrapolatedTargetX - smoothCursorX;
-        const dy = extrapolatedTargetY - smoothCursorY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        // Zone morte anti-micro-tremblement : en-dessous de 1.2px, stabilisation parfaite
-        if (dist >= 1.2) {
-            // Glissement doux exponentiel constant
-            const boost = Math.min(0.20, dist / 300);
-            const glideFactor = Math.min(0.85, currentJsGlide + boost);
-
-            smoothCursorX += dx * glideFactor;
-            smoothCursorY += dy * glideFactor;
-        }
+        // Position directe filtrée 1€ (anti-tremblement haute précision, zéro glissement/inertie)
+        smoothCursorX = destCursorX;
+        smoothCursorY = destCursorY;
     }
 
     if (cursorScreenX) cursorScreenX.textContent = `${Math.round(smoothCursorX)} px`;
@@ -1063,7 +993,7 @@ function stepContinuousGlide() {
         drawHoloReticle(reticleCanvasX, reticleCanvasY, isPinchedState || isAnchorLocked, isScrollActive);
     }
 
-    // Transmission continue à Windows à 60 Hz
+    // Transmission directe à Windows à 60 Hz
     if (chkMouseControl && chkMouseControl.checked) {
         if (stableGesture === 'FIST') {
             updateMouseCardState('pause', 'CURSEUR EN PAUSE (POING)', 'Ouvrez la main ou pointez l\'index');
@@ -1072,7 +1002,7 @@ function stepContinuousGlide() {
         } else if (!isPinchedState || (now - pinchStartTime < 200)) {
             sendMouseMove(smoothCursorX, smoothCursorY);
             if (!isPinchedState && stableGesture !== 'PEACE') {
-                updateMouseCardState('nav', 'NAVIGATION FLUIDE', 'Glissement continu et soyeux actif');
+                updateMouseCardState('nav', 'NAVIGATION DIRECTE', 'Anti-tremblement 1€ actif');
             }
         }
     } else {
@@ -1089,7 +1019,7 @@ function updateMouseCardState(state, title, sub) {
     if (!mouseActionBadge) return;
     switch (state) {
         case 'nav':
-            mouseActionBadge.textContent = 'GLISSEMENT';
+            mouseActionBadge.textContent = 'DIRECT';
             mouseActionBadge.style.color = 'var(--cyan)';
             mouseActionBadge.style.borderColor = 'var(--cyan)';
             break;
@@ -1351,12 +1281,6 @@ function setupEventListeners() {
         updateSmoothingProfile();
     });
 
-    if (rangeGlide) {
-        rangeGlide.addEventListener('input', () => {
-            updateGlideProfile();
-        });
-    }
-
     rangePinchThresh.addEventListener('input', () => {
         valPinchThresh.textContent = `${rangePinchThresh.value}%`;
     });
@@ -1369,7 +1293,6 @@ function setupEventListeners() {
 // --- 14. DÉMARRAGE INITIAL ---
 window.addEventListener('DOMContentLoaded', () => {
     updateSmoothingProfile();
-    updateGlideProfile();
     setupEventListeners();
     initWebSocket();
     initMediaPipe();
