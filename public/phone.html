@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>A.E.G.I.S — Phone Camera Stream</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="phone.css">
+</head>
+<body>
+    <div class="hud-container">
+        <!-- Top bar -->
+        <header class="hud-header">
+            <div class="hud-brand">
+                <span class="hud-dot"></span>
+                <span class="hud-title">A.E.G.I.S CAM</span>
+            </div>
+            <div id="statusBadge" class="status-badge status-init">
+                <span class="pulse-icon"></span>
+                <span id="statusText">INITIALISATION...</span>
+            </div>
+        </header>
+
+        <!-- Main camera viewport -->
+        <main class="viewport">
+            <video id="cameraPreview" autoplay playsinline muted></video>
+            
+            <div class="crosshair-layer">
+                <div class="corner tl"></div>
+                <div class="corner tr"></div>
+                <div class="corner bl"></div>
+                <div class="corner br"></div>
+                <div class="center-crosshair"></div>
+            </div>
+
+            <!-- Floating stats overlay -->
+            <div class="stats-panel">
+                <div class="stat-item">
+                    <span class="stat-label">RÉSOLUTION</span>
+                    <span id="statResolution" class="stat-val">---</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">FPS LOCAL</span>
+                    <span id="statFps" class="stat-val">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">LATENCE</span>
+                    <span id="statLatency" class="stat-val">--- ms</span>
+                </div>
+            </div>
+        </main>
+
+        <!-- Bottom Controls -->
+        <footer class="controls-footer">
+            <button id="btnSwitchCam" class="hud-btn">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 10c0-4.418-3.582-8-8-8s-8 3.582-8 8c0 2.21 0.895 4.21 2.343 5.657L4 18h6v-6l-2.343 2.343C6.627 13.314 6 11.737 6 10c0-3.314 2.686-6 6-6s6 2.686 6 6c0 1.737-0.627 3.314-1.657 4.343L18.657 16.657C20.105 15.21 21 13.21 21 10z"/>
+                </svg>
+                <span>CAMÉRA</span>
+            </button>
+
+            <button id="btnStreamToggle" class="hud-btn primary">
+                <span id="streamBtnText">DÉMARRER FLUX</span>
+            </button>
+
+            <button id="btnResToggle" class="hud-btn">
+                <span id="resText">480p</span>
+            </button>
+        </footer>
+    </div>
+
+    <script src="phone.js"></script>
+</body>
+</html>

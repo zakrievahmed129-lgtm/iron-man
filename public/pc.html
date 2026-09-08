@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A.E.G.I.S — Spatial HUD & Hand Tracking</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="pc.css">
+
+    <!-- MediaPipe Hands & Drawing Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="hud-layout">
+        <!-- Top bar -->
+        <header class="hud-topbar">
+            <div class="brand">
+                <div class="logo-shield"></div>
+                <div>
+                    <h1>A.E.G.I.S SPATIAL HUD</h1>
+                    <div class="sub">RÉCEPTEUR FLUX SMARTPHONE & DÉTECTION GESTUELLE</div>
+                </div>
+            </div>
+
+            <div class="header-status">
+                <div class="status-indicator">
+                    <span class="dot" id="serverDot"></span>
+                    <span id="serverStatus">SIGNALISATION : CONNEXION...</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="dot" id="streamDot"></span>
+                    <span id="streamStatus">FLUX VIDÉO : EN ATTENTE DU TÉLÉPHONE...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main workspace -->
+        <div class="main-stage">
+            <!-- Video & Holographic Canvas Frame -->
+            <div class="viewport-box">
+                <div class="box-corners">
+                    <span class="c tl"></span><span class="c tr"></span>
+                    <span class="c bl"></span><span class="c br"></span>
+                </div>
+
+                <div class="video-container">
+                    <video id="remoteVideo" autoplay playsinline></video>
+                    <canvas id="overlayCanvas"></canvas>
+
+                    <!-- Overlay d'attente quand le téléphone n'est pas encore connecté -->
+                    <div id="waitingOverlay" class="waiting-overlay">
+                        <div class="radar-scan"></div>
+                        <div class="waiting-card">
+                            <div class="phone-icon">📱</div>
+                            <h3>EN ATTENTE DU FLUX DU REDMI A3</h3>
+                            <p>Ouvre Chrome sur ton Redmi A3 et va sur l'adresse du téléphone ou scanne le QR code affiché dans le terminal.</p>
+                            <div class="tip-badge">ASTUCE : Clique sur "Paramètres avancés" si Chrome affiche une alerte SSL.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Side HUD Telemetry -->
+            <aside class="hud-sidebar">
+                <div class="panel-section">
+                    <div class="section-header">
+                        <span class="bracket">[</span>
+                        <h3>GESTIONNAIRE GESTUEL</h3>
+                        <span class="bracket">]</span>
+                    </div>
+
+                    <div class="gesture-display">
+                        <div class="gesture-icon" id="gestureIcon">🖐️</div>
+                        <div class="gesture-name" id="gestureName">AUCUNE MAIN DÉTECTÉE</div>
+                        <div class="gesture-desc" id="gestureDesc">Place ta main devant la caméra du téléphone</div>
+                    </div>
+
+                    <div class="meter-box">
+                        <div class="meter-label">
+                            <span>PINCEUR (POUCE-INDEX)</span>
+                            <span id="pinchPercent">0%</span>
+                        </div>
+                        <div class="meter-bar">
+                            <div id="pinchFill" class="meter-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <div class="section-header">
+                        <span class="bracket">[</span>
+                        <h3>COORDONNÉES SPATIALES 3D</h3>
+                        <span class="bracket">]</span>
+                    </div>
+
+                    <div class="coords-grid">
+                        <div class="coord-item">
+                            <span class="axis">AXE X</span>
+                            <span class="val" id="coordX">0.000</span>
+                        </div>
+                        <div class="coord-item">
+                            <span class="axis">AXE Y</span>
+                            <span class="val" id="coordY">0.000</span>
+                        </div>
+                        <div class="coord-item">
+                            <span class="axis">AXE Z (PROF.)</span>
+                            <span class="val" id="coordZ">0.000</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <div class="section-header">
+                        <span class="bracket">[</span>
+                        <h3>TÉLÉMÉTRIE SYSTÈME</h3>
+                        <span class="bracket">]</span>
+                    </div>
+
+                    <div class="telemetry-list">
+                        <div class="tele-item">
+                            <span>RÉSOLUTION FLUX :</span>
+                            <strong id="teleRes">---</strong>
+                        </div>
+                        <div class="tele-item">
+                            <span>FPS ENTRÉE VIDÉO :</span>
+                            <strong id="teleFpsVideo">0</strong>
+                        </div>
+                        <div class="tele-item">
+                            <span>FPS INFERENCE IA :</span>
+                            <strong id="teleFpsAI">0</strong>
+                        </div>
+                        <div class="tele-item">
+                            <span>LATENCE WEBRTC :</span>
+                            <strong id="telePing">&lt; 30 ms (LAN)</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="audio-feedback-toggle">
+                    <label class="switch-container">
+                        <input type="checkbox" id="chkAudioFeedback" checked>
+                        <span class="slider"></span>
+                        <span class="switch-label">SONS SCI-FI HAPTIQUES</span>
+                    </label>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <script src="pc.js"></script>
+</body>
+</html>
