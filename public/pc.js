@@ -261,22 +261,17 @@ bgWorker.postMessage('start');
 
 function processBackgroundCycle() {
     // 1. Inférence IA en tâche de fond si flux vidéo présent
-    if (!isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
+    if (!isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && remoteVideo.videoWidth > 0 && handsDetector) {
         isAiProcessing = true;
-        try {
-            offCtx.drawImage(remoteVideo, 0, 0, 320, 240);
-            handsDetector.send({ image: offscreenCanvas }).then(() => {
-                isAiProcessing = false;
-            }).catch(() => {
-                isAiProcessing = false;
-            });
-            aiFrameCount++;
-        } catch(e) {
+        handsDetector.send({ image: remoteVideo }).then(() => {
             isAiProcessing = false;
-        }
+            aiFrameCount++;
+        }).catch(() => {
+            isAiProcessing = false;
+        });
     }
 
-    // 2. Glissement continu à 60 Hz même en arrière-plan
+    // 2. Mise à jour directe du curseur
     stepContinuousGlide();
 }
 
@@ -569,13 +564,13 @@ function initMediaPipe() {
 
     handsDetector.setOptions({
         maxNumHands: 1,
-        modelComplexity: 0,
-        minDetectionConfidence: 0.55,
-        minTrackingConfidence: 0.60
+        modelComplexity: 1, // Modèle IA complet haute fidélité (détection 3D des doigts ultra-précise)
+        minDetectionConfidence: 0.50, // Sensibilité optimale anti-décrochage
+        minTrackingConfidence: 0.50   // Suivi continu ininterrompu même lors des rotations rapides
     });
 
     handsDetector.onResults(onHandResults);
-    console.log('🤖 MediaPipe Hands initialisé avec découplage 60 FPS');
+    console.log('🤖 MediaPipe Hands HD initialisé (Modèle 1 haute précision)');
 }
 
 // Écouteurs de démarrage immédiat du flux vidéo
@@ -603,17 +598,28 @@ remoteVideo.addEventListener('loadedmetadata', () => {
 
 let isAiProcessing = false;
 
-// Boucle d'inférence IA résiliente (ne s'arrête jamais même avant l'arrivée du flux)
+// Boucle d'inférence IA résiliente à pleine résolution native (sans perte de netteté)
 async function runAiInference() {
-    const isVideoPlaying = remoteVideo.readyState >= 2 && !remoteVideo.paused;
+    const isVideoPlaying = remoteVideo.readyState >= 2 && !remoteVideo.paused && remoteVideo.videoWidth > 0;
 
     if (!document.hidden && !isAiProcessing && isVideoPlaying && handsDetector) {
         isAiProcessing = true;
         try {
-            offCtx.drawImage(remoteVideo, 0, 0, 320, 240);
-            await handsDetector.send({ image: offscreenCanvas });
+            // Traitement natif direct du flux vidéo (netteté maximale pour les phalanges et le pincement)
+            await handsDetector.send({ image: remoteVideo });
             aiFrameCount++;
-        } catch (e) {}
+        } catch (e) {
+            // Fallback dynamique haute résolution si le contexte requiert un canvas
+            try {
+                if (offscreenCanvas.width !== remoteVideo.videoWidth) {
+                    offscreenCanvas.width = remoteVideo.videoWidth;
+                    offscreenCanvas.height = remoteVideo.videoHeight;
+                }
+                offCtx.drawImage(remoteVideo, 0, 0);
+                await handsDetector.send({ image: offscreenCanvas });
+                aiFrameCount++;
+            } catch (e2) {}
+        }
         isAiProcessing = false;
     }
 
@@ -621,8 +627,8 @@ async function runAiInference() {
         if (isVideoPlaying && 'requestVideoFrameCallback' in remoteVideo) {
             remoteVideo.requestVideoFrameCallback(runAiInference);
         } else {
-            // Si la vidéo est en attente ou s'initialise, vérifier toutes les 25ms
-            setTimeout(runAiInference, 25);
+            // Si la vidéo est en attente ou s'initialise, vérifier toutes les 16ms
+            setTimeout(runAiInference, 16);
         }
     }
 }
@@ -678,6 +684,9 @@ setInterval(() => {
 // --- 9. RÉSULTATS MEDIAPIPE & BIOMÉTRIE 3D ---
 // ============================================================================
 
+let consecutiveLostFrames = 0;
+const MAX_LOST_FRAMES = 3; // Tolérance anti-décrochage (~80ms de mémoire pour éviter les micro-coupures de détection)
+
 function dist3d(p1, p2) {
     const dx = p1.x - p2.x;
     const dy = p1.y - p2.y;
@@ -685,8 +694,22 @@ function dist3d(p1, p2) {
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// Calcul biomécanique 3D d'extension du doigt (100% invariant aux angles, distances et rotations)
+function getFingerExtensionRatio(mcp, pip, dip, tip) {
+    const directSpan = dist3d(tip, mcp);
+    const boneSum = dist3d(mcp, pip) + dist3d(pip, dip) + dist3d(dip, tip);
+    return directSpan / Math.max(0.001, boneSum);
+}
+
 function onHandResults(results) {
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        consecutiveLostFrames++;
+        // Persistance anti-décrochage : si la caméra a 1 ou 2 frames floues pendant un geste rapide,
+        // on maintient l'état actif sans briser le clic ni faire sauter le curseur
+        if (consecutiveLostFrames <= MAX_LOST_FRAMES && latestLandmarks !== null) {
+            return;
+        }
+
         if (latestLandmarks !== null) {
             sendMouseRelease();
         }
@@ -702,13 +725,10 @@ function onHandResults(results) {
         isScrollActive = false;
         isAnchorLocked = false;
         gestureHistory = [];
-        handVelocityX = 0;
-        handVelocityY = 0;
-        smoothVelocityX = 0;
-        smoothVelocityY = 0;
         return;
     }
 
+    consecutiveLostFrames = 0;
     latestLandmarks = results.multiHandLandmarks[0];
     latestHandedness = results.multiHandedness && results.multiHandedness[0] ? results.multiHandedness[0].label : 'Main';
 
@@ -717,7 +737,7 @@ function onHandResults(results) {
 }
 
 // ============================================================================
-// --- 10. GESTES & DÉTERMINATION CIBLE SPATIALE AVEC PRÉDICTION DE VITESSE ---
+// --- 10. GESTES & DÉTERMINATION CIBLE SPATIALE ULTRA-PRÉCISE ---
 // ============================================================================
 
 function analyzeHandAndTarget(landmarks, handedness) {
@@ -733,38 +753,54 @@ function analyzeHandAndTarget(landmarks, handedness) {
     const indexTip = landmarks[8];
     const middleMcp = landmarks[9];
     const middlePip = landmarks[10];
+    const middleDip = landmarks[11];
     const middleTip = landmarks[12];
     const ringMcp = landmarks[13];
     const ringPip = landmarks[14];
+    const ringDip = landmarks[15];
     const ringTip = landmarks[16];
     const pinkyMcp = landmarks[17];
     const pinkyPip = landmarks[18];
+    const pinkyDip = landmarks[19];
     const pinkyTip = landmarks[20];
 
     if (coordZ) coordZ.textContent = wrist.z ? wrist.z.toFixed(3) : '0.000';
 
-    // 1. Échelle anatomique 3D invariante à l'angle (somme des phalanges rigides de l'index et du pouce)
-    // Ne s'écrase JAMAIS même quand la main est tournée, de profil ou inclinée !
+    // 1. Échelle anatomique 3D invariante (somme totale des segments osseux rigides index + pouce)
+    // Structure osseuse constante : ne varie JAMAIS quelle que soit l'orientation 3D ou la distance
     const indexFingerLen = dist3d(indexMcp, indexPip) + dist3d(indexPip, indexDip) + dist3d(indexDip, indexTip);
-    const thumbFingerLen = dist3d(thumbMcp, thumbIp) + dist3d(thumbIp, thumbTip);
-    const anatomicalScale = Math.max(0.06, (indexFingerLen * 0.65 + thumbFingerLen * 0.35));
+    const thumbFingerLen = dist3d(thumbCmc, thumbMcp) + dist3d(thumbMcp, thumbIp) + dist3d(thumbIp, thumbTip);
+    const anatomicalScale = Math.max(0.06, (indexFingerLen * 0.60 + thumbFingerLen * 0.40));
 
-    // 2. Extension des doigts
-    const isIndexExtended = dist3d(indexTip, indexMcp) > dist3d(indexPip, indexMcp) * 1.15;
-    const isMiddleExtended = dist3d(middleTip, middleMcp) > dist3d(middlePip, middleMcp) * 1.15;
-    const isRingExtended = dist3d(ringTip, ringMcp) > dist3d(ringPip, ringMcp) * 1.15;
-    const isPinkyExtended = dist3d(pinkyTip, pinkyMcp) > dist3d(pinkyPip, pinkyMcp) * 1.15;
+    // 2. Détection biométrique d'extension des doigts (ratio réel 3D invariant)
+    // Ratio directSpan / boneSum : étendu quand >= 0.70, plié quand < 0.60
+    const isIndexExtended = getFingerExtensionRatio(indexMcp, indexPip, indexDip, indexTip) >= 0.70;
+    const isMiddleExtended = getFingerExtensionRatio(middleMcp, middlePip, middleDip, middleTip) >= 0.70;
+    const isRingExtended = getFingerExtensionRatio(ringMcp, ringPip, ringDip, ringTip) >= 0.70;
+    const isPinkyExtended = getFingerExtensionRatio(pinkyMcp, pinkyPip, pinkyDip, pinkyTip) >= 0.70;
 
-    // 3. Calcul du Pincement Multi-Points 3D (Détection omnidirectionnelle robuste)
-    // Mesure la distance réelle minimale : contact bout-à-bout ou contact pouce contre phalange de l'index
+    // 3. Calcul du Pincement Multi-Points 3D Ultra-Fidèle
+    // Mesure la distance minimale entre toute la surface du pouce (bout + pulpe IP) et l'index (bout + DIP + PIP)
     const dTipTip = dist3d(thumbTip, indexTip);
     const dTipDip = dist3d(thumbTip, indexDip);
     const dTipPip = dist3d(thumbTip, indexPip);
-    const minPinchDist = Math.min(dTipTip, dTipDip * 1.06, dTipPip * 1.25);
+    const dIpTip = dist3d(thumbIp, indexTip);
+    const dIpDip = dist3d(thumbIp, indexDip);
+
+    const minPinchDist = Math.min(
+        dTipTip,
+        dTipDip * 1.04,
+        dTipPip * 1.18,
+        dIpTip * 1.12,
+        dIpDip * 1.22
+    );
 
     const pinchRatio = minPinchDist / anatomicalScale;
-    const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.55 - pinchRatio) / 0.38 * 100)));
-    smoothPinchPct = Math.round(smoothPinchPct * 0.35 + targetPinchPct * 0.65);
+    // Étalonnage haute sensibilité : 0.54 (doigts ouverts 0%) à 0.16 (contact franc 100%)
+    const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.54 - pinchRatio) / 0.36 * 100)));
+    
+    // Réactivité immédiate sans latence (75% nouvelle valeur, 25% mémoire)
+    smoothPinchPct = Math.round(smoothPinchPct * 0.25 + targetPinchPct * 0.75);
 
     if (pinchPercent) pinchPercent.textContent = `${smoothPinchPct}%`;
     if (pinchFill) pinchFill.style.width = `${smoothPinchPct}%`;

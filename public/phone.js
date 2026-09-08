@@ -69,13 +69,27 @@ async function startCamera() {
             facingMode: currentFacingMode,
             width: { ideal: res.width, max: res.width },
             height: { ideal: res.height, max: res.height },
-            frameRate: { ideal: 60, min: 30 }
+            frameRate: { ideal: 60, min: 30 },
+            advanced: [
+                { focusMode: 'continuous' },
+                { exposureMode: 'continuous' }
+            ]
         }
     };
 
     try {
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         const videoTrack = localStream.getVideoTracks()[0];
+
+        // Optimisation de la mise au point et du contraste pour la détection fine des doigts
+        if (videoTrack && videoTrack.applyConstraints) {
+            videoTrack.applyConstraints({
+                advanced: [
+                    { focusMode: 'continuous' },
+                    { exposureMode: 'continuous' }
+                ]
+            }).catch(() => {});
+        }
 
         // Optimisation WebRTC : Priorité au mouvement fluide
         if (videoTrack && 'contentHint' in videoTrack) {
