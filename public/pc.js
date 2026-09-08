@@ -35,6 +35,12 @@ let audioCtx = null;
 let lastPinchState = false;
 let iceCandidateQueue = [];
 
+// Variables de stabilisation et lissage gestuel (Anti-hésitation)
+let smoothPinchPct = 0;
+let isPinchedState = false;
+let gestureHistory = [];
+let stableGesture = 'OPEN';
+
 // Configuration WebRTC standard
 const rtcConfig = {
     iceServers: [
@@ -146,7 +152,7 @@ function startKeepAlive() {
     }, 5000);
 }
 
-// --- 3. GESTION DE L'OFFRE WEBRTC (RÉCEPTION FLUX SANS FREEZE) ---
+// --- 3. GESTION DE L'OFFRE WEBRTC ---
 async function handleWebRTCOffer(sdp) {
     if (peerConnection) {
         peerConnection.close();
@@ -169,7 +175,7 @@ async function handleWebRTCOffer(sdp) {
         remoteVideo.srcObject = event.streams[0];
         remoteVideo.play().catch(() => {});
         streamDot.className = 'dot connected';
-        streamStatus.textContent = 'FLUX VIDÉO : ACTIF (REDMI A3)';
+        streamStatus.textContent = 'FLUX VIDÉO : LIVE DIRECT';
         waitingOverlay.style.display = 'none';
         playSciFiTone(880, 0.15, 'sine');
     };
@@ -188,7 +194,6 @@ async function handleWebRTCOffer(sdp) {
 
     await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
 
-    // Vider les candidats en attente
     while (iceCandidateQueue.length > 0) {
         const candidate = iceCandidateQueue.shift();
         try {
@@ -206,17 +211,16 @@ async function handleWebRTCOffer(sdp) {
             type: 'answer',
             sdp: peerConnection.localDescription
         }));
-        console.log('📤 Réponse SDP (Answer) envoyée au téléphone');
+        console.log('📤 Réponse SDP envoyée au téléphone');
     }
 }
 
-// --- 4. INITIALISATION MEDIAPIPE (OPTIMISÉ FAST LITE) ---
+// --- 4. INITIALISATION MEDIAPIPE ---
 function initMediaPipe() {
     handsDetector = new Hands({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
-    // modelComplexity: 0 (Lite) évite la surcharge mémoire et garantit 60 FPS constants
     handsDetector.setOptions({
         maxNumHands: 2,
         modelComplexity: 0,
@@ -228,14 +232,13 @@ function initMediaPipe() {
     console.log('🤖 MediaPipe Hands (Lite 60FPS) prêt');
 }
 
-// --- 5. BOUCLE D'ANALYSE D'IMAGES STABLE ---
+// --- 5. BOUCLE D'ANALYSE D'IMAGES ---
 let videoFrames = 0;
 let aiFrames = 0;
 let lastMetricTime = performance.now();
 
 async function processVideoFrame() {
     if (remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
-        // Aligner exactement la taille du canvas sur la vidéo reçue
         if (overlayCanvas.width !== remoteVideo.videoWidth || overlayCanvas.height !== remoteVideo.videoHeight) {
             overlayCanvas.width = remoteVideo.videoWidth || 640;
             overlayCanvas.height = remoteVideo.videoHeight || 480;
@@ -264,7 +267,6 @@ function startVideoLoop() {
     }
 }
 
-// Métriques FPS
 setInterval(() => {
     const now = performance.now();
     const elapsed = (now - lastMetricTime) / 1000;
@@ -275,20 +277,22 @@ setInterval(() => {
     lastMetricTime = now;
 }, 1000);
 
-// --- 6. DESSIN HOLOGRAPHIQUE SUR CANVAS ---
+// --- 6. DESSIN DU SQUELETTE HOLOGRAPHIQUE ---
 function onHandResults(results) {
     aiFrames++;
-    // La vidéo tourne en direct sur GPU en arrière-plan via #remoteVideo,
-    // donc le canvas ne dessine QUE le squelette néon ! Zéro copie CPU, ultra-fluide !
     ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
         gestureIcon.textContent = '🖐️';
         gestureName.textContent = 'AUCUNE MAIN';
         gestureDesc.textContent = 'Place ta main devant la caméra';
+        gestureName.style.color = '#ffffff';
         pinchPercent.textContent = '0%';
         pinchFill.style.width = '0%';
+        smoothPinchPct = 0;
+        isPinchedState = false;
         lastPinchState = false;
+        gestureHistory = [];
         return;
     }
 
@@ -349,70 +353,154 @@ function drawHolographicHand(landmarks) {
     ctx.shadowBlur = 0;
 }
 
-// --- 7. CLASSIFICATEUR DE GESTES ---
-function analyzeGestures(landmarks, handedness) {
-    const thumbTip = landmarks[4];
-    const indexTip = landmarks[8];
-    const middleTip = landmarks[12];
-    const ringTip = landmarks[16];
-    const pinkyTip = landmarks[20];
-    const wrist = landmarks[0];
+// --- 7. CLASSIFICATEUR DE GESTES MATHÉMATIQUE INVARIANT (ANTI-HÉSITATION) ---
+function dist3d(p1, p2) {
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    const dz = (p1.z || 0) - (p2.z || 0);
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
 
+function analyzeGestures(landmarks, handedness) {
+    const wrist = landmarks[0];
+    const thumbTip = landmarks[4];
+    const indexMcp = landmarks[5];
+    const indexPip = landmarks[6];
+    const indexTip = landmarks[8];
+    const middleMcp = landmarks[9];
+    const middlePip = landmarks[10];
+    const middleTip = landmarks[12];
+    const ringMcp = landmarks[13];
+    const ringPip = landmarks[14];
+    const ringTip = landmarks[16];
+    const pinkyMcp = landmarks[17];
+    const pinkyPip = landmarks[18];
+    const pinkyTip = landmarks[20];
+
+    // Téléportation coordonnées 3D
     coordX.textContent = wrist.x.toFixed(3);
     coordY.textContent = wrist.y.toFixed(3);
     coordZ.textContent = wrist.z.toFixed(3);
 
-    const dx = thumbTip.x - indexTip.x;
-    const dy = thumbTip.y - indexTip.y;
-    const dz = thumbTip.z - indexTip.z;
-    const pinchDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // 1. Échelle de la main (Distance Poignet ➔ Base du majeur)
+    // Permet de normaliser toutes les distances peu importe si la main est près ou loin !
+    const palmScale = Math.max(0.04, dist3d(wrist, middleMcp));
 
-    const pinchProgress = Math.max(0, Math.min(1, (0.16 - pinchDist) / 0.11));
-    const pinchPct = Math.round(pinchProgress * 100);
+    // 2. Détection d'extension des doigts (Invariante à la rotation et à l'angle de la main)
+    const isIndexExtended = dist3d(indexTip, wrist) > dist3d(indexPip, wrist) * 1.15 && dist3d(indexTip, wrist) > dist3d(indexMcp, wrist) * 1.25;
+    const isMiddleExtended = dist3d(middleTip, wrist) > dist3d(middlePip, wrist) * 1.15 && dist3d(middleTip, wrist) > dist3d(middleMcp, wrist) * 1.25;
+    const isRingExtended = dist3d(ringTip, wrist) > dist3d(ringPip, wrist) * 1.15 && dist3d(ringTip, wrist) > dist3d(ringMcp, wrist) * 1.25;
+    const isPinkyExtended = dist3d(pinkyTip, wrist) > dist3d(pinkyPip, wrist) * 1.15 && dist3d(pinkyTip, wrist) > dist3d(pinkyMcp, wrist) * 1.25;
 
-    pinchPercent.textContent = `${pinchPct}%`;
-    pinchFill.style.width = `${pinchPct}%`;
+    // 3. Calcul du Pincement Normalisé (Pouce - Index)
+    const rawPinchRatio = dist3d(thumbTip, indexTip) / palmScale;
+    
+    // Normalisation : < 0.28 = 100% pincé, > 0.70 = 0% pincé
+    const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.70 - rawPinchRatio) / 0.42 * 100)));
+    
+    // Lissage exponentiel (Moving Average) : jauge fluide sans tremblement
+    smoothPinchPct = Math.round(smoothPinchPct * 0.65 + targetPinchPct * 0.35);
 
-    const isPinched = pinchPct >= 75;
+    pinchPercent.textContent = `${smoothPinchPct}%`;
+    pinchFill.style.width = `${smoothPinchPct}%`;
 
-    const isIndexExtended = indexTip.y < landmarks[6].y;
-    const isMiddleExtended = middleTip.y < landmarks[10].y;
-    const isRingExtended = ringTip.y < landmarks[14].y;
-    const isPinkyExtended = pinkyTip.y < landmarks[18].y;
+    // Hystérésis de pincement (évite tout clignotement au seuil de clic)
+    if (!isPinchedState && smoothPinchPct >= 72) {
+        isPinchedState = true;
+    } else if (isPinchedState && smoothPinchPct <= 45) {
+        isPinchedState = false;
+    }
 
-    if (isPinched) {
-        gestureIcon.textContent = '🤏';
-        gestureName.textContent = `PINCEMENT (${handedness.toUpperCase()})`;
-        gestureDesc.textContent = 'Action de saisie / clic déclenchée !';
-        gestureName.style.color = '#ff0077';
-
-        if (!lastPinchState) {
-            playSciFiTone(1200, 0.08, 'triangle');
-            lastPinchState = true;
-        }
+    // 4. Détermination du geste brut instantané
+    let detectedRawGesture = 'OPEN';
+    if (isPinchedState) {
+        detectedRawGesture = 'PINCH';
+    } else if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+        detectedRawGesture = 'FIST';
+    } else if (isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+        detectedRawGesture = 'POINT';
+    } else if (isIndexExtended && isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+        detectedRawGesture = 'PEACE';
     } else {
-        lastPinchState = false;
-        if (isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
-            gestureIcon.textContent = '☝️';
-            gestureName.textContent = 'POINTAGE (INDEX)';
-            gestureDesc.textContent = 'Curseur spatial directionnel actif';
-            gestureName.style.color = '#00f2fe';
-        } else if (isIndexExtended && isMiddleExtended && !isRingExtended && !isPinkyExtended) {
-            gestureIcon.textContent = '✌️';
-            gestureName.textContent = 'VICTOIRE / DEUX DOIGTS';
-            gestureDesc.textContent = 'Geste de sélection secondaire';
-            gestureName.style.color = '#00ff88';
-        } else if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+        detectedRawGesture = 'OPEN';
+    }
+
+    // 5. Stabilisateur temporel anti-hésitation (Filtre par vote majoritaire sur les 5 dernières frames)
+    gestureHistory.push(detectedRawGesture);
+    if (gestureHistory.length > 5) {
+        gestureHistory.shift();
+    }
+
+    const counts = {};
+    for (const g of gestureHistory) {
+        counts[g] = (counts[g] || 0) + 1;
+    }
+
+    let dominantGesture = detectedRawGesture;
+    let maxCount = 0;
+    for (const [g, count] of Object.entries(counts)) {
+        if (count > maxCount) {
+            maxCount = count;
+            dominantGesture = g;
+        }
+    }
+
+    // Seuil de confirmation : au moins 3 frames cohérentes sur 5 pour basculer
+    if (maxCount >= 3) {
+        stableGesture = dominantGesture;
+    }
+
+    // 6. Mise à jour de l'affichage avec le geste stable
+    updateGestureUI(stableGesture, handedness);
+}
+
+function updateGestureUI(gesture, handedness) {
+    const handLabel = handedness ? handedness.toUpperCase() : 'MAIN';
+
+    switch (gesture) {
+        case 'PINCH':
+            gestureIcon.textContent = '🤏';
+            gestureName.textContent = `PINCEMENT (${handLabel})`;
+            gestureDesc.textContent = 'Action de saisie / clic validée !';
+            gestureName.style.color = '#ff0077';
+            if (!lastPinchState) {
+                playSciFiTone(1200, 0.08, 'triangle');
+                lastPinchState = true;
+            }
+            break;
+
+        case 'FIST':
+            lastPinchState = false;
             gestureIcon.textContent = '✊';
-            gestureName.textContent = 'POING FERMÉ';
-            gestureDesc.textContent = 'Verrouillage ou arrêt de mouvement';
+            gestureName.textContent = `POING FERMÉ (${handLabel})`;
+            gestureDesc.textContent = 'Verrouillage / arrêt du mouvement';
             gestureName.style.color = '#ffb703';
-        } else {
+            break;
+
+        case 'POINT':
+            lastPinchState = false;
+            gestureIcon.textContent = '☝️';
+            gestureName.textContent = `POINTAGE (${handLabel})`;
+            gestureDesc.textContent = 'Curseur spatial laser directionnel';
+            gestureName.style.color = '#00f2fe';
+            break;
+
+        case 'PEACE':
+            lastPinchState = false;
+            gestureIcon.textContent = '✌️';
+            gestureName.textContent = `VICTOIRE / 2 DOIGTS (${handLabel})`;
+            gestureDesc.textContent = 'Sélection secondaire / raccourci';
+            gestureName.style.color = '#00ff88';
+            break;
+
+        case 'OPEN':
+        default:
+            lastPinchState = false;
             gestureIcon.textContent = '🖐️';
-            gestureName.textContent = 'MAIN OUVERTE';
+            gestureName.textContent = `MAIN OUVERTE (${handLabel})`;
             gestureDesc.textContent = 'Mode navigation spatiale libre';
             gestureName.style.color = '#ffffff';
-        }
+            break;
     }
 }
 
