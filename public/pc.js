@@ -1,6 +1,8 @@
-// --- PROJET A.E.G.I.S : MOTEUR SPATIAL 60 FPS, FILTRE 1€ ANTI-TREMBLEMENT & PERSISTANCE ARRIÈRE-PLAN ---
+// ============================================================================
+// --- PROJET A.E.G.I.S : MOTEUR SPATIAL 60 FPS, GLISSEMENT FLUIDE & ANTI-LAG ---
+// ============================================================================
 
-// 1. Éléments DOM
+// --- 1. ÉLÉMENTS DU DOM ---
 const remoteVideo = document.getElementById('remoteVideo');
 const overlayCanvas = document.getElementById('overlayCanvas');
 const ctx = overlayCanvas.getContext('2d');
@@ -14,7 +16,7 @@ const mouseBridgeStatus = document.getElementById('mouseBridgeStatus');
 const streamDot = document.getElementById('streamDot');
 const streamStatus = document.getElementById('streamStatus');
 
-// Contrôles Souris
+// Contrôles Souris & Carte d'état
 const chkMouseControl = document.getElementById('chkMouseControl');
 const lblMouseControl = document.getElementById('lblMouseControl');
 const mouseStatusCard = document.getElementById('mouseStatusCard');
@@ -35,6 +37,8 @@ const rangeSensitivity = document.getElementById('rangeSensitivity');
 const valSensitivity = document.getElementById('valSensitivity');
 const rangeSmoothing = document.getElementById('rangeSmoothing');
 const valSmoothing = document.getElementById('valSmoothing');
+const rangeGlide = document.getElementById('rangeGlide');
+const valGlide = document.getElementById('valGlide');
 const rangePinchThresh = document.getElementById('rangePinchThresh');
 const valPinchThresh = document.getElementById('valPinchThresh');
 const rangeScrollSpeed = document.getElementById('rangeScrollSpeed');
@@ -42,6 +46,7 @@ const valScrollSpeed = document.getElementById('valScrollSpeed');
 const chkMirrorX = document.getElementById('chkMirrorX');
 const chkAntiSlip = document.getElementById('chkAntiSlip');
 const chkHoloReticle = document.getElementById('chkHoloReticle');
+const chkAudioFeedback = document.getElementById('chkAudioFeedback');
 
 // Panneau Gestes & Coordonnées
 const gestureIcon = document.getElementById('gestureIcon');
@@ -49,7 +54,6 @@ const gestureName = document.getElementById('gestureName');
 const gestureDesc = document.getElementById('gestureDesc');
 const pinchPercent = document.getElementById('pinchPercent');
 const pinchFill = document.getElementById('pinchFill');
-
 const cursorScreenX = document.getElementById('cursorScreenX');
 const cursorScreenY = document.getElementById('cursorScreenY');
 const coordZ = document.getElementById('coordZ');
@@ -60,7 +64,6 @@ const teleRes = document.getElementById('teleRes');
 const teleFpsVideo = document.getElementById('teleFpsVideo');
 const teleFpsAI = document.getElementById('teleFpsAI');
 const telePing = document.getElementById('telePing');
-const chkAudioFeedback = document.getElementById('chkAudioFeedback');
 
 // Variables Réseau & WebRTC
 let ws = null;
@@ -74,18 +77,48 @@ let screenWidth = window.screen.width || 1920;
 let screenHeight = window.screen.height || 1080;
 let smoothCursorX = screenWidth / 2;
 let smoothCursorY = screenHeight / 2;
-let targetCursorX = screenWidth / 2;
-let targetCursorY = screenHeight / 2;
-let isMouseBridgeReady = false;
+let destCursorX = screenWidth / 2;
+let destCursorY = screenHeight / 2;
 let lastSentX = -1;
 let lastSentY = -1;
+let isMouseBridgeReady = false;
+
+// Variables Dynamiques pour Glissement & Prédiction Continue
+let lastDetectionTime = 0;
+let prevDetectionTime = 0;
+let prevRawScreenX = screenWidth / 2;
+let prevRawScreenY = screenHeight / 2;
+let handVelocityX = 0;
+let handVelocityY = 0;
+let smoothVelocityX = 0;
+let smoothVelocityY = 0;
+
+// Profils de Glissement Continu (même en lag vidéo)
+const GLIDE_PRESETS = [
+    { label: 'RÉACTIF', csFactor: 0.40, jsFactor: 0.48 },
+    { label: 'DIRECT', csFactor: 0.30, jsFactor: 0.36 },
+    { label: 'SOYEUX', csFactor: 0.20, jsFactor: 0.24 },
+    { label: 'ULTRA FLUIDE', csFactor: 0.13, jsFactor: 0.17 },
+    { label: 'AÉROGLISSEUR', csFactor: 0.07, jsFactor: 0.11 }
+];
+let currentJsGlide = GLIDE_PRESETS[2].jsFactor;
+let currentCsGlide = GLIDE_PRESETS[2].csFactor;
+
+// Profils de Lissage Filtre 1€ Anti-Tremblement
+const SMOOTH_PRESETS = [
+    { label: 'RÉACTIF', minCutoff: 1.2, beta: 0.04 },
+    { label: 'FLUIDE', minCutoff: 0.75, beta: 0.025 },
+    { label: 'TRÈS DOUX', minCutoff: 0.45, beta: 0.015 },
+    { label: 'ANTI-TREMBLEUR', minCutoff: 0.28, beta: 0.008 },
+    { label: 'ULTRA SOYEUX', minCutoff: 0.16, beta: 0.004 }
+];
 
 // Anti-dérapage au clic
 let lockedCursorX = null;
 let lockedCursorY = null;
 let isAnchorLocked = false;
 
-// Variables Gestes & Pincement (Click & Scroll)
+// Gestes & Pincement (Click & Scroll)
 let smoothPinchPct = 0;
 let isPinchedState = false;
 let gestureHistory = [];
@@ -129,7 +162,7 @@ const rtcConfig = {
 };
 
 // ============================================================================
-// --- 2. FILTRE 1€ (ONE EURO FILTER) : DOUCEUR & ZÉRO TREMBLEMENT ---
+// --- 2. FILTRE 1€ (ONE EURO FILTER) : ANTI-TREMBLEMENT HAUTE PRÉCISION ---
 // ============================================================================
 
 class LowPassFilter {
@@ -154,7 +187,7 @@ class LowPassFilter {
 }
 
 class OneEuroFilter {
-    constructor(freq = 60, minCutoff = 0.5, beta = 0.015, dCutoff = 1.0) {
+    constructor(freq = 60, minCutoff = 0.45, beta = 0.015, dCutoff = 1.0) {
         this.freq = freq;
         this.minCutoff = minCutoff;
         this.beta = beta;
@@ -186,32 +219,37 @@ class OneEuroFilter {
     }
 }
 
-// Filtres 1€ pour X et Y
-const filterX = new OneEuroFilter(60, 0.5, 0.015);
-const filterY = new OneEuroFilter(60, 0.5, 0.015);
-
-// Mise à jour des coefficients selon le curseur de lissage
-const SMOOTH_PRESETS = [
-    { label: 'RÉACTIF', minCutoff: 1.2, beta: 0.04, ease: 0.80 },
-    { label: 'FLUIDE', minCutoff: 0.75, beta: 0.025, ease: 0.55 },
-    { label: 'TRÈS DOUX', minCutoff: 0.45, beta: 0.015, ease: 0.38 },
-    { label: 'ANTI-TREMBLEUR', minCutoff: 0.30, beta: 0.008, ease: 0.26 },
-    { label: 'ULTRA SOYEUX', minCutoff: 0.18, beta: 0.004, ease: 0.18 }
-];
+const filterX = new OneEuroFilter(60, 0.45, 0.015);
+const filterY = new OneEuroFilter(60, 0.45, 0.015);
 
 function updateSmoothingProfile() {
+    if (!rangeSmoothing) return;
     const level = parseInt(rangeSmoothing.value) || 3;
     const preset = SMOOTH_PRESETS[level - 1] || SMOOTH_PRESETS[2];
-    valSmoothing.textContent = preset.label;
+    if (valSmoothing) valSmoothing.textContent = preset.label;
     filterX.setCutoffs(preset.minCutoff, preset.beta);
     filterY.setCutoffs(preset.minCutoff, preset.beta);
+}
+
+function updateGlideProfile() {
+    if (!rangeGlide) return;
+    const level = parseInt(rangeGlide.value) || 3;
+    const preset = GLIDE_PRESETS[level - 1] || GLIDE_PRESETS[2];
+    if (valGlide) valGlide.textContent = preset.label;
+    currentJsGlide = preset.jsFactor;
+    currentCsGlide = preset.csFactor;
+
+    // Envoi de la consigne au moteur natif C# via WebSocket
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'mouse_set_glide', glide: currentCsGlide }));
+    }
 }
 
 // ============================================================================
 // --- 3. PERSISTANCE EN ARRIÈRE-PLAN (MÊME RÉDUIT !) ---
 // ============================================================================
 
-// A. Maintien actif de l'AudioContext pour empêcher Chromium de décharger l'onglet
+// A. Maintien actif de l'AudioContext pour empêcher Chromium de décharger le processus
 let bgKeepAliveAudio = null;
 function initBackgroundAudio() {
     try {
@@ -222,7 +260,7 @@ function initBackgroundAudio() {
         osc.connect(gain);
         gain.connect(bgKeepAliveAudio.destination);
         osc.start();
-        console.log('⚡ Keep-Alive Audio actif (empêche la mise en veille de la fenêtre)');
+        console.log('⚡ Audio Keep-Alive actif (empêche la suspension en arrière-plan)');
     } catch(e) {}
 }
 
@@ -247,7 +285,7 @@ const workerBlob = new Blob([`
 
 const bgWorker = new Worker(URL.createObjectURL(workerBlob));
 bgWorker.onmessage = function() {
-    // Si la fenêtre est masquée ou réduite, le Worker prend le relais à 60 Hz !
+    // Si la fenêtre est minimisée ou masquée, le Worker prend le relais à 60 Hz
     if (document.hidden) {
         processBackgroundCycle();
     }
@@ -255,7 +293,7 @@ bgWorker.onmessage = function() {
 bgWorker.postMessage('start');
 
 function processBackgroundCycle() {
-    // 1. Inférence IA en tâche de fond si disponible
+    // 1. Inférence IA en tâche de fond si flux vidéo présent
     if (!isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
         isAiProcessing = true;
         try {
@@ -271,10 +309,8 @@ function processBackgroundCycle() {
         }
     }
 
-    // 2. Traitement continu du curseur et transmission souris
-    if (latestLandmarks) {
-        updateCursorAndGestures(latestLandmarks, latestHandedness);
-    }
+    // 2. Glissement continu à 60 Hz même en arrière-plan
+    stepContinuousGlide();
 }
 
 // ============================================================================
@@ -282,7 +318,7 @@ function processBackgroundCycle() {
 // ============================================================================
 
 function playSciFiTone(freq, duration, type = 'sine') {
-    if (!chkAudioFeedback.checked) return;
+    if (!chkAudioFeedback || !chkAudioFeedback.checked) return;
     try {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -343,6 +379,7 @@ function initWebSocket() {
         ws.send(JSON.stringify({ type: 'register', role: 'pc' }));
         console.log('✅ Connecté au serveur A.E.G.I.S');
         startKeepAlive();
+        updateGlideProfile();
     };
 
     ws.onmessage = async (event) => {
@@ -354,13 +391,14 @@ function initWebSocket() {
                     if (data.screenWidth && data.screenHeight) {
                         screenWidth = data.screenWidth;
                         screenHeight = data.screenHeight;
-                        teleScreenRes.textContent = `${screenWidth}x${screenHeight}`;
+                        if (teleScreenRes) teleScreenRes.textContent = `${screenWidth}x${screenHeight}`;
                         console.log(`🖥️ Écran Windows synchronisé : ${screenWidth}x${screenHeight}`);
                     }
                     if (data.bridgeReady) {
                         isMouseBridgeReady = true;
                         mouseBridgeDot.className = 'dot connected';
-                        mouseBridgeStatus.textContent = 'SOURIS NATIVE : PRÊTE';
+                        mouseBridgeStatus.textContent = 'SOURIS NATIVE : PRÊTE (166 HZ GLIDE)';
+                        updateGlideProfile();
                     }
                     break;
 
@@ -381,6 +419,7 @@ function initWebSocket() {
                         }
                         iceCandidateQueue = [];
                         latestLandmarks = null;
+                        sendMouseRelease();
                     }
                     break;
 
@@ -429,6 +468,13 @@ function sendMouseMove(x, y) {
     ws.send(JSON.stringify({ type: 'mouse_move', x: rx, y: ry }));
 }
 
+function sendMouseRelease() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'mouse_release' }));
+    lastSentX = -1;
+    lastSentY = -1;
+}
+
 function sendMouseClick(button = 'left') {
     if (!chkMouseControl.checked || !ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: 'mouse_click', button }));
@@ -448,8 +494,18 @@ async function handleWebRTCOffer(sdp) {
         peerConnection.close();
     }
 
-    iceCandidateQueue = [];
     peerConnection = new RTCPeerConnection(rtcConfig);
+
+    peerConnection.ontrack = (event) => {
+        console.log('🎬 Flux vidéo haute fluidité reçu !');
+        if (remoteVideo.srcObject !== event.streams[0]) {
+            remoteVideo.srcObject = event.streams[0];
+            remoteVideo.play().catch(e => console.error('Lecture vidéo:', e));
+            waitingOverlay.style.display = 'none';
+            streamDot.className = 'dot connected';
+            streamStatus.textContent = 'FLUX VIDÉO : ACTIF (DIRECT)';
+        }
+    };
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
@@ -460,41 +516,16 @@ async function handleWebRTCOffer(sdp) {
         }
     };
 
-    peerConnection.ontrack = (event) => {
-        console.log('📹 Flux vidéo distant direct reçu du smartphone !');
-        remoteVideo.srcObject = event.streams[0];
-        remoteVideo.play().catch(() => {});
-
-        // Zéro délai tampon WebRTC
-        try {
-            const receivers = peerConnection.getReceivers();
-            for (const r of receivers) {
-                if (r.track && r.track.kind === 'video') {
-                    if ('playoutDelayHint' in r) {
-                        r.playoutDelayHint = 0;
-                    }
-                }
-            }
-        } catch (e) {}
-
-        streamDot.className = 'dot connected';
-        streamStatus.textContent = 'FLUX VIDÉO : DIRECT 60 FPS';
-        waitingOverlay.style.display = 'none';
-        playSciFiTone(880, 0.15, 'sine');
-    };
-
-    peerConnection.onconnectionstatechange = () => {
-        if (peerConnection.connectionState === 'connected') {
-            streamDot.className = 'dot connected';
-            streamStatus.textContent = 'FLUX VIDÉO : DIRECT 60 FPS';
-        } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log('ICE Connection State:', peerConnection.iceConnectionState);
+        if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
             streamDot.className = 'dot disconnected';
             streamStatus.textContent = 'FLUX INTERROMPU';
-            waitingOverlay.style.display = 'flex';
+            sendMouseRelease();
         }
     };
 
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+    await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
 
     while (iceCandidateQueue.length > 0) {
         const candidate = iceCandidateQueue.shift();
@@ -532,16 +563,16 @@ function initMediaPipe() {
     });
 
     handsDetector.onResults(onHandResults);
-    console.log('🤖 MediaPipe Hands 60 FPS initialisé');
+    console.log('🤖 MediaPipe Hands initialisé avec découplage 60 FPS');
 }
 
 // ============================================================================
-// --- 8. BOUCLE DÉCOUPLÉE 60 FPS (RENDU & IA INDÉPENDANTS) ---
+// --- 8. INFÉRENCE IA & BOUCLE DE RENDU DÉCOUPLÉE 60 FPS ---
 // ============================================================================
 
 let isAiProcessing = false;
 
-// Boucle IA en arrière-plan
+// Boucle d'inférence IA indépendante (s'adapte au débit de la caméra)
 async function runAiInference() {
     if (!document.hidden && !isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
         isAiProcessing = true;
@@ -562,14 +593,13 @@ async function runAiInference() {
     }
 }
 
-// Reprise de l'inférence dès que la fenêtre redevient visible
 document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
         runAiInference();
     }
 });
 
-// Boucle Rendu & Mouvement Souris (60 - 120 FPS continus)
+// Boucle principale de rendu visuel & calcul du glissement à 60 FPS
 function renderLoop() {
     renderFrameCount++;
 
@@ -578,7 +608,7 @@ function renderLoop() {
             if (overlayCanvas.width !== remoteVideo.videoWidth || overlayCanvas.height !== remoteVideo.videoHeight) {
                 overlayCanvas.width = remoteVideo.videoWidth || 640;
                 overlayCanvas.height = remoteVideo.videoHeight || 480;
-                teleRes.textContent = `${overlayCanvas.width}x${overlayCanvas.height}`;
+                if (teleRes) teleRes.textContent = `${overlayCanvas.width}x${overlayCanvas.height}`;
             }
         }
 
@@ -588,10 +618,12 @@ function renderLoop() {
 
         if (latestLandmarks) {
             drawHolographicHand(latestLandmarks);
-            updateCursorAndGestures(latestLandmarks, latestHandedness);
         } else {
-            updateMouseCardState('pause', 'EN ATTENTE DE MAIN', 'Place ta main devant la caméra');
+            updateMouseCardState('pause', 'EN ATTENTE DE MAIN', 'Placez votre main devant la caméra');
         }
+
+        // Moteur de glissement continu à 60 FPS
+        stepContinuousGlide();
     }
 
     requestAnimationFrame(renderLoop);
@@ -601,8 +633,8 @@ function renderLoop() {
 setInterval(() => {
     const now = performance.now();
     const elapsed = (now - lastFpsTime) / 1000;
-    teleFpsVideo.textContent = Math.round(renderFrameCount / elapsed);
-    teleFpsAI.textContent = Math.round(aiFrameCount / elapsed);
+    if (teleFpsVideo) teleFpsVideo.textContent = Math.round(renderFrameCount / elapsed);
+    if (teleFpsAI) teleFpsAI.textContent = Math.round(aiFrameCount / elapsed);
     renderFrameCount = 0;
     aiFrameCount = 0;
     lastFpsTime = now;
@@ -621,10 +653,13 @@ function dist3d(p1, p2) {
 
 function onHandResults(results) {
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        if (latestLandmarks !== null) {
+            sendMouseRelease();
+        }
         latestLandmarks = null;
         gestureIcon.textContent = '🖐️';
         gestureName.textContent = 'AUCUNE MAIN';
-        gestureDesc.textContent = 'Place ta main devant la caméra du téléphone';
+        gestureDesc.textContent = 'Placez votre main devant la caméra du téléphone';
         gestureName.style.color = '#ffffff';
         pinchPercent.textContent = '0%';
         pinchFill.style.width = '0%';
@@ -633,18 +668,26 @@ function onHandResults(results) {
         isScrollActive = false;
         isAnchorLocked = false;
         gestureHistory = [];
+        handVelocityX = 0;
+        handVelocityY = 0;
+        smoothVelocityX = 0;
+        smoothVelocityY = 0;
         return;
     }
 
     latestLandmarks = results.multiHandLandmarks[0];
     latestHandedness = results.multiHandedness && results.multiHandedness[0] ? results.multiHandedness[0].label : 'Main';
+
+    // Analyse immédiate des gestes et mise à jour de la cible destination
+    analyzeHandAndTarget(latestLandmarks, latestHandedness);
 }
 
 // ============================================================================
-// --- 10. GESTES & CONTRÔLE SOURIS AVEC FILTRE 1€ ET ZÉRO TREMBLEMENT ---
+// --- 10. GESTES & DÉTERMINATION CIBLE SPATIALE AVEC PRÉDICTION DE VITESSE ---
 // ============================================================================
 
-function updateCursorAndGestures(landmarks, handedness) {
+function analyzeHandAndTarget(landmarks, handedness) {
+    const now = performance.now();
     const wrist = landmarks[0];
     const thumbTip = landmarks[4];
     const indexMcp = landmarks[5];
@@ -660,7 +703,7 @@ function updateCursorAndGestures(landmarks, handedness) {
     const pinkyPip = landmarks[18];
     const pinkyTip = landmarks[20];
 
-    coordZ.textContent = wrist.z ? wrist.z.toFixed(3) : '0.000';
+    if (coordZ) coordZ.textContent = wrist.z ? wrist.z.toFixed(3) : '0.000';
 
     // 1. Échelle de paume hybride 3D
     const palmWidth = dist3d(indexMcp, pinkyMcp);
@@ -691,7 +734,7 @@ function updateCursorAndGestures(landmarks, handedness) {
         isPinchedState = false;
     }
 
-    // 4. Détermination gestuelle
+    // 4. Détermination gestuelle stabilisée
     let detectedRawGesture = 'OPEN';
     if (isPinchedState) {
         detectedRawGesture = 'PINCH';
@@ -720,14 +763,14 @@ function updateCursorAndGestures(landmarks, handedness) {
     }
     if (maxC >= 2) stableGesture = dominant;
 
-    // --- TRACKING CURSEUR SOURIS & FILTRAGE 1€ SOYEUX ---
+    // --- TRACKING CURSEUR SOURIS & FILTRAGE 1€ ---
     const rawX = isPinchedState ? (thumbTip.x + indexTip.x) / 2 : indexTip.x;
     const rawY = isPinchedState ? (thumbTip.y + indexTip.y) / 2 : indexTip.y;
 
     const normX = chkMirrorX.checked ? (1.0 - rawX) : rawX;
     const normY = rawY;
 
-    // Zone active calibrée (marges de 12%)
+    // Zone active calibrée (marges de 12% pour atteindre tous les coins confortablement)
     const minX = 0.12, maxX = 0.88;
     const minY = 0.12, maxY = 0.88;
     const clampedX = Math.max(minX, Math.min(maxX, normX));
@@ -739,12 +782,30 @@ function updateCursorAndGestures(landmarks, handedness) {
     const rawScreenX = Math.max(0, Math.min(screenWidth, ((boxX - 0.5) * sens + 0.5) * screenWidth));
     const rawScreenY = Math.max(0, Math.min(screenHeight, ((boxY - 0.5) * sens + 0.5) * screenHeight));
 
-    // Application du filtre 1€ : filtre adaptatif haute précision
-    const now = performance.now();
-    targetCursorX = filterX.filter(rawScreenX, now);
-    targetCursorY = filterY.filter(rawScreenY, now);
+    // Filtrage 1-Euro adaptatif
+    const filteredX = filterX.filter(rawScreenX, now);
+    const filteredY = filterY.filter(rawScreenY, now);
 
-    // Système Anti-Dérapage au Clic : fige la position au moment exact du pincement
+    // Calcul de vitesse réelle entre frames caméra pour prédiction et continuité
+    if (prevDetectionTime > 0) {
+        const dtDetect = Math.max(8, now - prevDetectionTime);
+        const vx = (filteredX - prevRawScreenX) / dtDetect;
+        const vy = (filteredY - prevRawScreenY) / dtDetect;
+
+        // Lissage doux du vecteur vitesse (anti-bruit caméra)
+        smoothVelocityX = smoothVelocityX * 0.35 + vx * 0.65;
+        smoothVelocityY = smoothVelocityY * 0.35 + vy * 0.65;
+    }
+
+    prevRawScreenX = filteredX;
+    prevRawScreenY = filteredY;
+    prevDetectionTime = now;
+    lastDetectionTime = now;
+
+    destCursorX = filteredX;
+    destCursorY = filteredY;
+
+    // Anti-dérapage au moment exact du pincement
     if (chkAntiSlip.checked && isPinchedState && !isScrollActive) {
         if (!isAnchorLocked) {
             lockedCursorX = smoothCursorX;
@@ -755,37 +816,9 @@ function updateCursorAndGestures(landmarks, handedness) {
         isAnchorLocked = false;
     }
 
-    if (isAnchorLocked) {
-        smoothCursorX = lockedCursorX;
-        smoothCursorY = lockedCursorY;
-    } else {
-        // Lissage doux exponentiel vers la cible filtrée
-        const dx = targetCursorX - smoothCursorX;
-        const dy = targetCursorY - smoothCursorY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        // Deadzone anti-tremblement : si micro-vibration < 1.8 px, le curseur ne bouge pas
-        if (dist >= 1.8) {
-            const level = parseInt(rangeSmoothing.value) || 3;
-            const preset = SMOOTH_PRESETS[level - 1] || SMOOTH_PRESETS[2];
-            const velocityBoost = Math.min(0.45, dist / 200);
-            const ease = Math.min(0.95, preset.ease + velocityBoost);
-
-            smoothCursorX += dx * ease;
-            smoothCursorY += dy * ease;
-        }
-    }
-
-    cursorScreenX.textContent = `${Math.round(smoothCursorX)} px`;
-    cursorScreenY.textContent = `${Math.round(smoothCursorY)} px`;
-
-    if (!document.hidden && chkHoloReticle.checked) {
-        drawHoloReticle(rawX * overlayCanvas.width, rawY * overlayCanvas.height, isPinchedState, isScrollActive);
-    }
-
     // --- LOGIQUE PINCEMENT : CLIC & SCROLL ---
     if (!wasPinched && isPinchedState) {
-        pinchStartTime = performance.now();
+        pinchStartTime = now;
         pinchStartHandY = normY;
         pinchLastHandY = normY;
         pinchStartScreenY = smoothCursorY;
@@ -799,7 +832,7 @@ function updateCursorAndGestures(landmarks, handedness) {
         const deltaScreenY = smoothCursorY - pinchStartScreenY;
         const deltaHandY = normY - pinchStartHandY;
 
-        // Détection de défilement : pincement maintenu + mouvement vertical
+        // Activation du défilement : pincement maintenu avec translation verticale
         if (!isScrollActive && (Math.abs(deltaScreenY) > 22 || Math.abs(deltaHandY) > 0.04)) {
             isScrollActive = true;
             isAnchorLocked = false;
@@ -813,7 +846,7 @@ function updateCursorAndGestures(landmarks, handedness) {
             const scrollDelta = -frameDeltaY * 2600 * scrollMultiplier;
             scrollAccumulator += scrollDelta;
 
-            if (Math.abs(scrollAccumulator) >= 18) {
+            if (Math.abs(scrollAccumulator) >= 16) {
                 sendMouseScroll(scrollAccumulator);
                 playScrollTickSound();
 
@@ -835,13 +868,13 @@ function updateCursorAndGestures(landmarks, handedness) {
     }
 
     if (wasPinched && !isPinchedState) {
-        const pinchDuration = performance.now() - pinchStartTime;
+        const pinchDuration = now - pinchStartTime;
         scrollMeterBox.classList.remove('active');
 
         if (isScrollActive) {
             isScrollActive = false;
         } else if (pinchDuration < 380) {
-            const clickNow = performance.now();
+            const clickNow = now;
             if (clickNow - lastClickTime < 320) {
                 sendMouseClick('double');
                 playDoubleClickSound();
@@ -862,9 +895,9 @@ function updateCursorAndGestures(landmarks, handedness) {
     // Clic Droit (Geste Peace)
     if (stableGesture === 'PEACE' && !isPinchedState) {
         if (peaceStartTime === 0) {
-            peaceStartTime = performance.now();
+            peaceStartTime = now;
             peaceTriggered = false;
-        } else if (!peaceTriggered && (performance.now() - peaceStartTime > 340)) {
+        } else if (!peaceTriggered && (now - peaceStartTime > 340)) {
             sendMouseClick('right');
             playRightClickSound();
             spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#00f2fe');
@@ -876,33 +909,93 @@ function updateCursorAndGestures(landmarks, handedness) {
         peaceTriggered = false;
     }
 
-    // Transmission mouvement souris Windows à 60 Hz
-    if (chkMouseControl.checked) {
-        if (stableGesture === 'FIST') {
-            updateMouseCardState('pause', 'CURSEUR EN PAUSE (POING)', 'Ouvrez la main ou pointez l\'index');
-        } else if (isScrollActive) {
-            // Mode scroll : curseur fixe
-        } else if (!isPinchedState || (performance.now() - pinchStartTime < 200)) {
-            sendMouseMove(smoothCursorX, smoothCursorY);
-            if (!isPinchedState && stableGesture !== 'PEACE') {
-                updateMouseCardState('nav', 'NAVIGATION SOURIS', 'Curseur doux synchronisé avec l\'index');
-            }
-        }
-    } else {
-        updateMouseCardState('disabled', 'CONTRÔLE SOURIS DÉSACTIVÉ', 'Appuyez sur [ESPACE] pour activer');
-    }
-
     updateGestureUI(stableGesture, handedness);
 }
 
-function updateMouseCardState(state, title, sub) {
-    mouseStatusCard.className = `mouse-status-card state-${state}`;
-    mouseStatusTitle.textContent = title;
-    mouseStatusSub.textContent = sub;
+// ============================================================================
+// --- 11. MOTEUR DE GLISSEMENT CONTINU 60 FPS (INDÉPENDANT DU LAG VIDÉO) ---
+// ============================================================================
 
+function stepContinuousGlide() {
+    if (!latestLandmarks) return;
+
+    const now = performance.now();
+    const timeSinceDetection = now - lastDetectionTime;
+
+    // Si pas de détection récente (> 450ms), libérer la souris pour utilisation physique
+    if (timeSinceDetection > 450) {
+        sendMouseRelease();
+        return;
+    }
+
+    if (isAnchorLocked) {
+        smoothCursorX = lockedCursorX;
+        smoothCursorY = lockedCursorY;
+    } else {
+        // Prédiction dynamique pendant les creux entre deux frames caméra
+        // Si le flux vidéo tourne à 10-15 FPS, la vitesse continue de faire glisser
+        // la cible vers l'avant au lieu de s'arrêter brutalement
+        let extrapolatedTargetX = destCursorX;
+        let extrapolatedTargetY = destCursorY;
+
+        if (timeSinceDetection > 8 && timeSinceDetection < 180) {
+            const decay = Math.max(0, 1.0 - timeSinceDetection / 200);
+            extrapolatedTargetX += smoothVelocityX * timeSinceDetection * 0.45 * decay;
+            extrapolatedTargetY += smoothVelocityY * timeSinceDetection * 0.45 * decay;
+        }
+
+        const dx = extrapolatedTargetX - smoothCursorX;
+        const dy = extrapolatedTargetY - smoothCursorY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        // Zone morte anti-micro-tremblement : en-dessous de 1.2px, stabilisation parfaite
+        if (dist >= 1.2) {
+            // Glissement doux exponentiel constant
+            const boost = Math.min(0.20, dist / 300);
+            const glideFactor = Math.min(0.85, currentJsGlide + boost);
+
+            smoothCursorX += dx * glideFactor;
+            smoothCursorY += dy * glideFactor;
+        }
+    }
+
+    if (cursorScreenX) cursorScreenX.textContent = `${Math.round(smoothCursorX)} px`;
+    if (cursorScreenY) cursorScreenY.textContent = `${Math.round(smoothCursorY)} px`;
+
+    // Dessin du réticule holographique
+    if (!document.hidden && chkHoloReticle && chkHoloReticle.checked && latestLandmarks) {
+        const rawX = isPinchedState ? (latestLandmarks[4].x + latestLandmarks[8].x) / 2 : latestLandmarks[8].x;
+        const rawY = isPinchedState ? (latestLandmarks[4].y + latestLandmarks[8].y) / 2 : latestLandmarks[8].y;
+        drawHoloReticle(rawX * overlayCanvas.width, rawY * overlayCanvas.height, isPinchedState, isScrollActive);
+    }
+
+    // Transmission continue à Windows à 60 Hz
+    if (chkMouseControl && chkMouseControl.checked) {
+        if (stableGesture === 'FIST') {
+            updateMouseCardState('pause', 'CURSEUR EN PAUSE (POING)', 'Ouvrez la main ou pointez l\'index');
+        } else if (isScrollActive) {
+            // Mode scroll : curseur figé pour faciliter le défilement
+        } else if (!isPinchedState || (now - pinchStartTime < 200)) {
+            sendMouseMove(smoothCursorX, smoothCursorY);
+            if (!isPinchedState && stableGesture !== 'PEACE') {
+                updateMouseCardState('nav', 'NAVIGATION FLUIDE', 'Glissement continu et soyeux actif');
+            }
+        }
+    } else {
+        updateMouseCardState('disabled', 'CONTRÔLE SOURIS DÉSACTIVÉ', 'Appuyez sur [ESPACE] pour réactiver');
+    }
+}
+
+function updateMouseCardState(state, title, sub) {
+    if (!mouseStatusCard) return;
+    mouseStatusCard.className = `mouse-status-card state-${state}`;
+    if (mouseStatusTitle) mouseStatusTitle.textContent = title;
+    if (mouseStatusSub) mouseStatusSub.textContent = sub;
+
+    if (!mouseActionBadge) return;
     switch (state) {
         case 'nav':
-            mouseActionBadge.textContent = 'ACTIF';
+            mouseActionBadge.textContent = 'GLISSEMENT';
             mouseActionBadge.style.color = 'var(--cyan)';
             mouseActionBadge.style.borderColor = 'var(--cyan)';
             break;
@@ -930,7 +1023,7 @@ function updateMouseCardState(state, title, sub) {
 }
 
 // ============================================================================
-// --- 11. RENDU HOLOGRAPHIQUE GPU (ZÉRO SHADOWBLUR CPU) ---
+// --- 12. RENDU HOLOGRAPHIQUE GPU (ZÉRO SHADOWBLUR CPU) ---
 // ============================================================================
 
 function drawActiveZoneGuide() {
@@ -1054,9 +1147,9 @@ function drawHolographicHand(landmarks) {
         [5,9],[9,13],[13,17]
     ];
 
-    // Lueur double-stroke GPU
+    // Lueur double-stroke GPU ultra-fluide (sans flou CPU)
     ctx.lineWidth = 6;
-    ctx.strokeStyle = 'rgba(0, 242, 254, 0.25)';
+    ctx.strokeStyle = 'rgba(0, 242, 254, 0.22)';
     ctx.beginPath();
     for (const [start, end] of CONNECTIONS) {
         const p1 = landmarks[start];
@@ -1130,14 +1223,14 @@ function updateGestureUI(gesture, handedness) {
         default:
             gestureIcon.textContent = '🖐️';
             gestureName.textContent = `MAIN OUVERTE (${handLabel})`;
-            gestureDesc.textContent = 'Mode navigation spatiale libre';
+            gestureDesc.textContent = 'Mode navigation spatiale continue';
             gestureName.style.color = '#ffffff';
             break;
     }
 }
 
 // ============================================================================
-// --- 12. ÉCOUTEURS D'ÉVÉNEMENTS & RACCOURCIS ---
+// --- 13. ÉCOUTEURS D'ÉVÉNEMENTS & RACCOURCIS ---
 // ============================================================================
 
 function setupEventListeners() {
@@ -1164,6 +1257,12 @@ function setupEventListeners() {
         updateSmoothingProfile();
     });
 
+    if (rangeGlide) {
+        rangeGlide.addEventListener('input', () => {
+            updateGlideProfile();
+        });
+    }
+
     rangePinchThresh.addEventListener('input', () => {
         valPinchThresh.textContent = `${rangePinchThresh.value}%`;
     });
@@ -1173,15 +1272,16 @@ function setupEventListeners() {
     });
 }
 
-// --- 13. DÉMARRAGE INITIAL ---
+// --- 14. DÉMARRAGE INITIAL ---
 window.addEventListener('DOMContentLoaded', () => {
     updateSmoothingProfile();
+    updateGlideProfile();
     setupEventListeners();
     initWebSocket();
     initMediaPipe();
     initBackgroundAudio();
 
-    // Boucle de rendu premier-plan 60 FPS
+    // Démarrage boucle de rendu et glissement 60 FPS
     requestAnimationFrame(renderLoop);
 
     // Démarrage inférence IA

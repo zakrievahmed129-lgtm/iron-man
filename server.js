@@ -219,6 +219,16 @@ function handleWsConnection(ws) {
                     }
                     break;
 
+                case 'mouse_set_glide':
+                    if (typeof data.glide === 'number') {
+                        sendMouseCommand(`SET_GLIDE ${data.glide.toFixed(3)}`);
+                    }
+                    break;
+
+                case 'mouse_release':
+                    sendMouseCommand('RELEASE');
+                    break;
+
                 case 'offer':
                     if (pcClient && pcClient.readyState === WebSocket.OPEN) {
                         pcClient.send(JSON.stringify({ type: 'offer', sdp: data.sdp }));
