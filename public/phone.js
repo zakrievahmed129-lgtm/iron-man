@@ -16,12 +16,12 @@ const statLatency = document.getElementById('statLatency');
 let localStream = null;
 let peerConnection = null;
 let ws = null;
-let currentFacingMode = 'user'; // 'user' (front) ou 'environment' (back)
-let currentResolution = { width: 640, height: 480 }; // 480p par défaut (optimal pour Redmi A3)
+let currentFacingMode = 'user';
+let currentResolution = { width: 640, height: 480 };
 let wakeLock = null;
 let isStreamingActive = true;
+let phoneIceQueue = [];
 
-// Configuration WebRTC standard avec STUN Google (utilisé si besoin en LAN/WLAN)
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -40,14 +40,14 @@ async function requestWakeLock() {
     try {
         if ('wakeLock' in navigator) {
             wakeLock = await navigator.wakeLock.request('screen');
-            console.log('✅ Écran maintenu allumé (WakeLock actif)');
+            console.log('✅ Écran maintenu allumé');
         }
     } catch (err) {
-        console.warn('WakeLock non supporté ou refusé:', err);
+        console.warn('WakeLock:', err);
     }
 }
 
-// --- 3. DÉMARRAGE DE LA CAMÉRA ---
+// --- 3. DÉMARRAGE CAMÉRA ---
 async function startCamera() {
     setStatus('init', 'DÉMARRAGE CAMÉRA...');
 
@@ -61,7 +61,7 @@ async function startCamera() {
             facingMode: currentFacingMode,
             width: { ideal: currentResolution.width },
             height: { ideal: currentResolution.height },
-            frameRate: { ideal: 30, max: 60 }
+            frameRate: { ideal: 30, max: 30 }
         }
     };
 
@@ -69,7 +69,6 @@ async function startCamera() {
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         videoEl.srcObject = localStream;
 
-        // Si caméra avant, effet miroir
         if (currentFacingMode === 'user') {
             videoEl.style.transform = 'scaleX(-1)';
         } else {
@@ -78,9 +77,8 @@ async function startCamera() {
 
         videoEl.onloadedmetadata = () => {
             statResolution.textContent = `${videoEl.videoWidth}x${videoEl.videoHeight}`;
-            console.log(`📹 Caméra démarrée : ${videoEl.videoWidth}x${videoEl.videoHeight}`);
+            console.log(`📹 Caméra prête : ${videoEl.videoWidth}x${videoEl.videoHeight}`);
             
-            // Si une connexion WebRTC est en cours, remplacer la piste vidéo
             if (peerConnection) {
                 const videoTrack = localStream.getVideoTracks()[0];
                 const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
@@ -91,11 +89,13 @@ async function startCamera() {
         };
 
         requestWakeLock();
-        initWebSocket();
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            initWebSocket();
+        }
     } catch (err) {
         console.error('Erreur accès caméra:', err);
         setStatus('error', 'CAMÉRA REFUSÉE');
-        alert("Impossible d'accéder à la caméra. Vérifie que tu as accepté les permissions dans Chrome.");
+        alert("Permission caméra refusée. Vérifie les paramètres de Chrome.");
     }
 }
 
@@ -130,19 +130,30 @@ function initWebSocket() {
                             peerConnection.close();
                             peerConnection = null;
                         }
+                        phoneIceQueue = [];
                     }
                     break;
 
                 case 'answer':
                     if (peerConnection) {
                         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                        console.log('✅ Réponse SDP (Answer) reçue du PC');
+                        console.log('✅ Answer SDP appliquée');
+
+                        // Vider la file d'attente ICE
+                        while (phoneIceQueue.length > 0) {
+                            const cand = phoneIceQueue.shift();
+                            try {
+                                await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+                            } catch(e) {}
+                        }
                     }
                     break;
 
                 case 'candidate':
-                    if (peerConnection && data.candidate) {
+                    if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
                         await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    } else {
+                        phoneIceQueue.push(data.candidate);
                     }
                     break;
 
@@ -157,28 +168,27 @@ function initWebSocket() {
     };
 
     ws.onclose = () => {
-        console.warn('⚠️ WebSocket fermé. Reconnexion dans 2s...');
+        console.warn('⚠️ WebSocket fermé. Reconnexion...');
         setStatus('error', 'SERVEUR DÉCONNECTÉ');
         setTimeout(initWebSocket, 2000);
     };
 }
 
-// --- 5. CRÉATION DE L'OFFRE WEBRTC ---
+// --- 5. CRÉATION OFFRE WEBRTC ---
 async function createWebRTCOffer() {
     if (peerConnection) {
         peerConnection.close();
     }
 
+    phoneIceQueue = [];
     peerConnection = new RTCPeerConnection(rtcConfig);
 
-    // Ajouter les pistes locales de la caméra
     if (localStream) {
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
         });
     }
 
-    // Gestion des candidats ICE
     peerConnection.onicecandidate = (event) => {
         if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
@@ -189,7 +199,7 @@ async function createWebRTCOffer() {
     };
 
     peerConnection.onconnectionstatechange = () => {
-        console.log('État connexion WebRTC:', peerConnection.connectionState);
+        console.log('État WebRTC Phone:', peerConnection.connectionState);
         if (peerConnection.connectionState === 'connected') {
             setStatus('live', 'LIVE STREAMING');
         } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
@@ -212,11 +222,11 @@ async function createWebRTCOffer() {
             console.log('📤 Offre WebRTC envoyée au PC');
         }
     } catch (err) {
-        console.error('Erreur création offre WebRTC:', err);
+        console.error('Erreur création offre:', err);
     }
 }
 
-// --- 6. MESURE DES FPS LOCAUX & LATENCE ---
+// --- 6. FPS ET PING ---
 let lastFrameTime = performance.now();
 let frameCount = 0;
 function updateFps() {
@@ -236,13 +246,13 @@ function startPingLoop() {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
         }
-    }, 2000);
+    }, 3000);
 }
 
-// --- 7. CONTRÔLES BOUTONS DU TÉLÉPHONE ---
+// --- 7. BOUTONS ---
 btnSwitchCam.addEventListener('click', () => {
     currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
-    console.log('Changement caméra vers:', currentFacingMode);
+    console.log('Switch caméra:', currentFacingMode);
     startCamera();
 });
 
@@ -254,7 +264,6 @@ btnResToggle.addEventListener('click', () => {
         currentResolution = { width: 640, height: 480 };
         resText.textContent = '480p';
     }
-    console.log('Changement résolution vers:', resText.textContent);
     startCamera();
 });
 
@@ -270,5 +279,4 @@ btnStreamToggle.addEventListener('click', () => {
     }
 });
 
-// Démarrage initial
 window.addEventListener('DOMContentLoaded', startCamera);

@@ -30,10 +30,12 @@ let ws = null;
 let peerConnection = null;
 let handsDetector = null;
 let isProcessingFrame = false;
+let isLoopRunning = false;
 let audioCtx = null;
 let lastPinchState = false;
+let iceCandidateQueue = [];
 
-// Configuration WebRTC
+// Configuration WebRTC standard
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -41,7 +43,7 @@ const rtcConfig = {
     ]
 };
 
-// --- 1. MOTEUR AUDIO PROCÉDURAL SCI-FI (WEB AUDIO API) ---
+// --- 1. MOTEUR AUDIO SCI-FI (WEB AUDIO API) ---
 function playSciFiTone(freq, duration, type = 'sine') {
     if (!chkAudioFeedback.checked) return;
     try {
@@ -68,11 +70,11 @@ function playSciFiTone(freq, duration, type = 'sine') {
         osc.start();
         osc.stop(audioCtx.currentTime + duration);
     } catch (e) {
-        // Ignorer les blocages d'autoplay audio
+        // Ignorer blocage autoplay
     }
 }
 
-// --- 2. WEBSOCKET ET SIGNALISATION ---
+// --- 2. WEBSOCKET SIGNALISATION & KEEP-ALIVE ---
 function initWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}`;
@@ -84,6 +86,7 @@ function initWebSocket() {
         serverStatus.textContent = 'SIGNALISATION : CONNECTÉ';
         ws.send(JSON.stringify({ type: 'register', role: 'pc' }));
         console.log('✅ Connecté au serveur de signalisation');
+        startKeepAlive();
     };
 
     ws.onmessage = async (event) => {
@@ -106,6 +109,7 @@ function initWebSocket() {
                             peerConnection.close();
                             peerConnection = null;
                         }
+                        iceCandidateQueue = [];
                     }
                     break;
 
@@ -115,8 +119,10 @@ function initWebSocket() {
                     break;
 
                 case 'candidate':
-                    if (peerConnection && data.candidate) {
+                    if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
                         await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    } else {
+                        iceCandidateQueue.push(data.candidate);
                     }
                     break;
             }
@@ -132,12 +138,21 @@ function initWebSocket() {
     };
 }
 
-// --- 3. TRAITEMENT DE L'OFFRE WEBRTC (RÉCEPTION DU FLUX DU REDMI A3) ---
+function startKeepAlive() {
+    setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+        }
+    }, 5000);
+}
+
+// --- 3. GESTION DE L'OFFRE WEBRTC (RÉCEPTION FLUX SANS FREEZE) ---
 async function handleWebRTCOffer(sdp) {
     if (peerConnection) {
         peerConnection.close();
     }
 
+    iceCandidateQueue = [];
     peerConnection = new RTCPeerConnection(rtcConfig);
 
     peerConnection.onicecandidate = (event) => {
@@ -152,6 +167,7 @@ async function handleWebRTCOffer(sdp) {
     peerConnection.ontrack = (event) => {
         console.log('📹 Piste vidéo distante reçue !');
         remoteVideo.srcObject = event.streams[0];
+        remoteVideo.play().catch(() => {});
         streamDot.className = 'dot connected';
         streamStatus.textContent = 'FLUX VIDÉO : ACTIF (REDMI A3)';
         waitingOverlay.style.display = 'none';
@@ -160,7 +176,10 @@ async function handleWebRTCOffer(sdp) {
 
     peerConnection.onconnectionstatechange = () => {
         console.log('État WebRTC PC:', peerConnection.connectionState);
-        if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
+        if (peerConnection.connectionState === 'connected') {
+            streamDot.className = 'dot connected';
+            streamStatus.textContent = 'FLUX VIDÉO : LIVE DIRECT';
+        } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
             streamDot.className = 'dot disconnected';
             streamStatus.textContent = 'FLUX INTERROMPU';
             waitingOverlay.style.display = 'flex';
@@ -168,6 +187,17 @@ async function handleWebRTCOffer(sdp) {
     };
 
     await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+
+    // Vider les candidats en attente
+    while (iceCandidateQueue.length > 0) {
+        const candidate = iceCandidateQueue.shift();
+        try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+            console.warn('Erreur candidate:', e);
+        }
+    }
+
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
 
@@ -180,48 +210,58 @@ async function handleWebRTCOffer(sdp) {
     }
 }
 
-// --- 4. INITIALISATION DE MEDIAPIPE HANDS ---
+// --- 4. INITIALISATION MEDIAPIPE (OPTIMISÉ FAST LITE) ---
 function initMediaPipe() {
     handsDetector = new Hands({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
+    // modelComplexity: 0 (Lite) évite la surcharge mémoire et garantit 60 FPS constants
     handsDetector.setOptions({
         maxNumHands: 2,
-        modelComplexity: 1,
+        modelComplexity: 0,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5
     });
 
     handsDetector.onResults(onHandResults);
-    console.log('🤖 MediaPipe Hands prêt');
+    console.log('🤖 MediaPipe Hands (Lite 60FPS) prêt');
 }
 
-// --- 5. BOUCLE D'ANALYSE D'IMAGES & RENDER ---
+// --- 5. BOUCLE D'ANALYSE D'IMAGES STABLE ---
 let videoFrames = 0;
 let aiFrames = 0;
 let lastMetricTime = performance.now();
 
 async function processVideoFrame() {
-    if (remoteVideo.readyState >= 2 && !remoteVideo.paused && !isProcessingFrame && handsDetector) {
-        // Ajuster la taille du canvas
+    if (remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
+        // Aligner exactement la taille du canvas sur la vidéo reçue
         if (overlayCanvas.width !== remoteVideo.videoWidth || overlayCanvas.height !== remoteVideo.videoHeight) {
-            overlayCanvas.width = remoteVideo.videoWidth;
-            overlayCanvas.height = remoteVideo.videoHeight;
-            teleRes.textContent = `${remoteVideo.videoWidth}x${remoteVideo.videoHeight}`;
+            overlayCanvas.width = remoteVideo.videoWidth || 640;
+            overlayCanvas.height = remoteVideo.videoHeight || 480;
+            teleRes.textContent = `${overlayCanvas.width}x${overlayCanvas.height}`;
         }
 
-        isProcessingFrame = true;
-        videoFrames++;
-        try {
-            await handsDetector.send({ image: remoteVideo });
-        } catch (e) {
-            // Frame ignorée en cas de micro-saut
+        if (!isProcessingFrame) {
+            isProcessingFrame = true;
+            videoFrames++;
+            try {
+                await handsDetector.send({ image: remoteVideo });
+            } catch (e) {
+                // Ignore micro-dropped frames
+            }
+            isProcessingFrame = false;
         }
-        isProcessingFrame = false;
     }
 
     requestAnimationFrame(processVideoFrame);
+}
+
+function startVideoLoop() {
+    if (!isLoopRunning) {
+        isLoopRunning = true;
+        requestAnimationFrame(processVideoFrame);
+    }
 }
 
 // Métriques FPS
@@ -235,15 +275,13 @@ setInterval(() => {
     lastMetricTime = now;
 }, 1000);
 
-// --- 6. RÉSULTATS MEDIAPIPE : DESSIN HOLOGRAPHIQUE & RECONNAISSANCE GESTUELLE ---
+// --- 6. DESSIN HOLOGRAPHIQUE SUR CANVAS ---
 function onHandResults(results) {
     aiFrames++;
+    // La vidéo tourne en direct sur GPU en arrière-plan via #remoteVideo,
+    // donc le canvas ne dessine QUE le squelette néon ! Zéro copie CPU, ultra-fluide !
     ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-    // Dessiner l'image vidéo de base
-    ctx.drawImage(results.image, 0, 0, overlayCanvas.width, overlayCanvas.height);
-
-    // Si aucune main n'est détectée
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
         gestureIcon.textContent = '🖐️';
         gestureName.textContent = 'AUCUNE MAIN';
@@ -254,7 +292,6 @@ function onHandResults(results) {
         return;
     }
 
-    // Analyser chaque main détectée
     for (let i = 0; i < results.multiHandLandmarks.length; i++) {
         const landmarks = results.multiHandLandmarks[i];
         const handedness = results.multiHandedness[i] ? results.multiHandedness[i].label : 'Main';
@@ -264,22 +301,19 @@ function onHandResults(results) {
     }
 }
 
-// Dessin des articulations façon HUD Laser Cyan
 function drawHolographicHand(landmarks) {
     const w = overlayCanvas.width;
     const h = overlayCanvas.height;
 
-    // Connexions de la main
     const CONNECTIONS = [
-        [0,1],[1,2],[2,3],[3,4],          // Pouce
-        [0,5],[5,6],[6,7],[7,8],          // Index
-        [0,9],[9,10],[10,11],[11,12],     // Majeur
-        [0,13],[13,14],[14,15],[15,16],   // Annulaire
-        [0,17],[17,18],[18,19],[19,20],   // Auriculaire
-        [5,9],[9,13],[13,17]              // Paume
+        [0,1],[1,2],[2,3],[3,4],
+        [0,5],[5,6],[6,7],[7,8],
+        [0,9],[9,10],[10,11],[11,12],
+        [0,13],[13,14],[14,15],[15,16],
+        [0,17],[17,18],[18,19],[19,20],
+        [5,9],[9,13],[13,17]
     ];
 
-    // Lignes laser néon
     ctx.lineWidth = 3;
     ctx.strokeStyle = '#00f2fe';
     ctx.shadowColor = '#00f2fe';
@@ -294,7 +328,6 @@ function drawHolographicHand(landmarks) {
         ctx.stroke();
     }
 
-    // Points d'articulation (Nodes lumineux)
     ctx.shadowBlur = 12;
     for (let j = 0; j < landmarks.length; j++) {
         const pt = landmarks[j];
@@ -303,7 +336,6 @@ function drawHolographicHand(landmarks) {
 
         ctx.beginPath();
         if (j === 4 || j === 8) {
-            // Bouts du pouce et de l'index en surbrillance
             ctx.arc(px, py, 6, 0, 2 * Math.PI);
             ctx.fillStyle = '#ff0077';
             ctx.shadowColor = '#ff0077';
@@ -314,10 +346,10 @@ function drawHolographicHand(landmarks) {
         }
         ctx.fill();
     }
-    ctx.shadowBlur = 0; // reset
+    ctx.shadowBlur = 0;
 }
 
-// --- 7. CLASSIFICATEUR DE GESTES EN TEMPS RÉEL ---
+// --- 7. CLASSIFICATEUR DE GESTES ---
 function analyzeGestures(landmarks, handedness) {
     const thumbTip = landmarks[4];
     const indexTip = landmarks[8];
@@ -326,18 +358,15 @@ function analyzeGestures(landmarks, handedness) {
     const pinkyTip = landmarks[20];
     const wrist = landmarks[0];
 
-    // Téléportation coordonnées 3D (Poignet)
     coordX.textContent = wrist.x.toFixed(3);
     coordY.textContent = wrist.y.toFixed(3);
     coordZ.textContent = wrist.z.toFixed(3);
 
-    // Calcul distance Pinceur (Pouce - Index)
     const dx = thumbTip.x - indexTip.x;
     const dy = thumbTip.y - indexTip.y;
     const dz = thumbTip.z - indexTip.z;
     const pinchDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-    // Normalisation du pincement (seuil ~ 0.05 à 0.15 selon échelle écran)
     const pinchProgress = Math.max(0, Math.min(1, (0.16 - pinchDist) / 0.11));
     const pinchPct = Math.round(pinchProgress * 100);
 
@@ -346,7 +375,6 @@ function analyzeGestures(landmarks, handedness) {
 
     const isPinched = pinchPct >= 75;
 
-    // Détection des doigts levés
     const isIndexExtended = indexTip.y < landmarks[6].y;
     const isMiddleExtended = middleTip.y < landmarks[10].y;
     const isRingExtended = ringTip.y < landmarks[14].y;
@@ -355,7 +383,7 @@ function analyzeGestures(landmarks, handedness) {
     if (isPinched) {
         gestureIcon.textContent = '🤏';
         gestureName.textContent = `PINCEMENT (${handedness.toUpperCase()})`;
-        gestureDesc.textContent = 'Action de saisie / interaction déclenchée !';
+        gestureDesc.textContent = 'Action de saisie / clic déclenchée !';
         gestureName.style.color = '#ff0077';
 
         if (!lastPinchState) {
@@ -388,11 +416,9 @@ function analyzeGestures(landmarks, handedness) {
     }
 }
 
-// Initialisation au chargement
+// Initialisation
 window.addEventListener('DOMContentLoaded', () => {
     initWebSocket();
     initMediaPipe();
-    remoteVideo.addEventListener('play', () => {
-        requestAnimationFrame(processVideoFrame);
-    });
+    startVideoLoop();
 });
