@@ -152,24 +152,53 @@ function initWebSocket() {
                     break;
 
                 case 'answer':
-                    if (peerConnection) {
-                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                        console.log('✅ Answer SDP appliquée');
+                    if (peerConnection && data.sdp) {
+                        let answerDesc;
+                        const answerData = data.sdp;
+                        if (answerData instanceof RTCSessionDescription) {
+                            answerDesc = answerData;
+                        } else if (typeof answerData === 'object' && answerData.sdp) {
+                            answerDesc = new RTCSessionDescription({
+                                type: answerData.type || 'answer',
+                                sdp: typeof answerData.sdp === 'string' ? answerData.sdp : answerData.sdp.sdp
+                            });
+                        } else if (typeof answerData === 'string') {
+                            answerDesc = new RTCSessionDescription({ type: 'answer', sdp: answerData });
+                        } else {
+                            answerDesc = new RTCSessionDescription(answerData);
+                        }
 
-                        while (phoneIceQueue.length > 0) {
-                            const cand = phoneIceQueue.shift();
-                            try {
-                                await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
-                            } catch(e) {}
+                        try {
+                            await peerConnection.setRemoteDescription(answerDesc);
+                            console.log('✅ Answer SDP appliquée sur le smartphone');
+
+                            while (phoneIceQueue.length > 0) {
+                                const cand = phoneIceQueue.shift();
+                                if (cand) {
+                                    try {
+                                        await peerConnection.addIceCandidate(cand);
+                                    } catch(e) {
+                                        try { await peerConnection.addIceCandidate(new RTCIceCandidate(cand)); } catch(e2) {}
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            console.error('Erreur setRemoteDescription sur smartphone:', err);
                         }
                     }
                     break;
 
                 case 'candidate':
-                    if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                    } else {
-                        phoneIceQueue.push(data.candidate);
+                    if (data.candidate) {
+                        if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+                            try {
+                                await peerConnection.addIceCandidate(data.candidate);
+                            } catch(e) {
+                                try { await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch(e2) {}
+                            }
+                        } else {
+                            phoneIceQueue.push(data.candidate);
+                        }
                     }
                     break;
 
@@ -190,20 +219,6 @@ function initWebSocket() {
     };
 }
 
-// Boost de débit binaire pour zéro saccade et fluidité maximale
-function boostSdpBitrate(sdp) {
-    const lines = sdp.split('\r\n');
-    const newLines = [];
-    for (const line of lines) {
-        newLines.push(line);
-        if (line.startsWith('m=video')) {
-            newLines.push('b=AS:4500');
-            newLines.push('b=TIAS:4500000');
-        }
-    }
-    return newLines.join('\r\n');
-}
-
 function applySenderHighSpeedSettings(sender) {
     try {
         const params = sender.getParameters();
@@ -220,19 +235,23 @@ function applySenderHighSpeedSettings(sender) {
 
 // --- 5. CRÉATION OFFRE WEBRTC OPTIMISÉE 60 FPS ---
 async function createWebRTCOffer() {
+    if (!localStream) {
+        console.log('⏳ Caméra pas encore prête, attente...');
+        setTimeout(createWebRTCOffer, 300);
+        return;
+    }
+
     if (peerConnection) {
-        peerConnection.close();
+        try { peerConnection.close(); } catch(e) {}
     }
 
     phoneIceQueue = [];
     peerConnection = new RTCPeerConnection(rtcConfig);
 
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            const sender = peerConnection.addTrack(track, localStream);
-            applySenderHighSpeedSettings(sender);
-        });
-    }
+    localStream.getTracks().forEach(track => {
+        const sender = peerConnection.addTrack(track, localStream);
+        applySenderHighSpeedSettings(sender);
+    });
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
@@ -246,20 +265,14 @@ async function createWebRTCOffer() {
     peerConnection.onconnectionstatechange = () => {
         console.log('État WebRTC Phone:', peerConnection.connectionState);
         if (peerConnection.connectionState === 'connected') {
-            setStatus('live', 'LIVE 60 FPS ULTRA-FLUIDE');
+            setStatus('live', 'LIVE 60 FPS CONNECTÉ');
         } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
             setStatus('waiting', 'CONNEXION PERDUE');
         }
     };
 
     try {
-        const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: false,
-            offerToReceiveVideo: false
-        });
-
-        // Application du boost de débit vidéo
-        offer.sdp = boostSdpBitrate(offer.sdp);
+        const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
 
         if (ws && ws.readyState === WebSocket.OPEN) {

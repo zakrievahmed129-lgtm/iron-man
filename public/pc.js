@@ -424,15 +424,21 @@ function initWebSocket() {
                     break;
 
                 case 'offer':
-                    console.log('📥 Offre WebRTC 60 FPS reçue du smartphone');
+                    console.log('📥 Offre WebRTC reçue du smartphone');
                     await handleWebRTCOffer(data.sdp);
                     break;
 
                 case 'candidate':
-                    if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                    } else {
-                        iceCandidateQueue.push(data.candidate);
+                    if (data.candidate) {
+                        if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+                            try {
+                                await peerConnection.addIceCandidate(data.candidate);
+                            } catch (e) {
+                                try { await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch(e2) {}
+                            }
+                        } else {
+                            iceCandidateQueue.push(data.candidate);
+                        }
                     }
                     break;
             }
@@ -489,22 +495,29 @@ function sendMouseScroll(delta) {
 // --- 6. WEBRTC ZERO-LATENCY RECEIVER ---
 // ============================================================================
 
-async function handleWebRTCOffer(sdp) {
+async function handleWebRTCOffer(offerData) {
     if (peerConnection) {
-        peerConnection.close();
+        try { peerConnection.close(); } catch(e) {}
     }
 
     peerConnection = new RTCPeerConnection(rtcConfig);
 
     peerConnection.ontrack = (event) => {
-        console.log('🎬 Flux vidéo haute fluidité reçu !');
-        if (remoteVideo.srcObject !== event.streams[0]) {
-            remoteVideo.srcObject = event.streams[0];
-            remoteVideo.play().catch(e => console.error('Lecture vidéo:', e));
-            waitingOverlay.style.display = 'none';
-            streamDot.className = 'dot connected';
-            streamStatus.textContent = 'FLUX VIDÉO : ACTIF (DIRECT)';
-        }
+        console.log('🎬 Flux vidéo haute fluidité reçu !', event);
+        const stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+        remoteVideo.srcObject = stream;
+        remoteVideo.muted = true;
+        remoteVideo.playsInline = true;
+        remoteVideo.play().catch(e => {
+            console.warn('Tentative autoplay avec muted:', e);
+            remoteVideo.muted = true;
+            remoteVideo.play().catch(() => {});
+        });
+
+        if (waitingOverlay) waitingOverlay.style.display = 'none';
+        if (streamDot) streamDot.className = 'dot connected';
+        if (streamStatus) streamStatus.textContent = 'FLUX VIDÉO : ACTIF (DIRECT 60 FPS)';
+        runAiInference();
     };
 
     peerConnection.onicecandidate = (event) => {
@@ -516,33 +529,61 @@ async function handleWebRTCOffer(sdp) {
         }
     };
 
-    peerConnection.oniceconnectionstatechange = () => {
-        console.log('ICE Connection State:', peerConnection.iceConnectionState);
-        if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
-            streamDot.className = 'dot disconnected';
-            streamStatus.textContent = 'FLUX INTERROMPU';
+    peerConnection.onconnectionstatechange = () => {
+        console.log('État WebRTC PC:', peerConnection.connectionState);
+        if (peerConnection.connectionState === 'connected') {
+            if (waitingOverlay) waitingOverlay.style.display = 'none';
+            if (streamDot) streamDot.className = 'dot connected';
+            if (streamStatus) streamStatus.textContent = 'FLUX VIDÉO : CONNECTÉ';
+        } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
+            if (streamDot) streamDot.className = 'dot disconnected';
+            if (streamStatus) streamStatus.textContent = 'FLUX INTERROMPU';
             sendMouseRelease();
         }
     };
 
-    await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
-
-    while (iceCandidateQueue.length > 0) {
-        const candidate = iceCandidateQueue.shift();
-        try {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {}
+    // Normalisation Robuste de l'offre SDP (accepte objet { type, sdp }, string ou RTCSessionDescription)
+    let sessionDesc;
+    if (offerData instanceof RTCSessionDescription) {
+        sessionDesc = offerData;
+    } else if (typeof offerData === 'object' && offerData.sdp) {
+        sessionDesc = new RTCSessionDescription({
+            type: offerData.type || 'offer',
+            sdp: typeof offerData.sdp === 'string' ? offerData.sdp : offerData.sdp.sdp
+        });
+    } else if (typeof offerData === 'string') {
+        sessionDesc = new RTCSessionDescription({ type: 'offer', sdp: offerData });
+    } else {
+        sessionDesc = new RTCSessionDescription(offerData);
     }
 
-    const answer = await peerConnection.createAnswer();
-    await peerConnection.setLocalDescription(answer);
+    try {
+        await peerConnection.setRemoteDescription(sessionDesc);
+        console.log('✅ Offre SDP distante appliquée avec succès sur le PC');
 
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'answer',
-            sdp: peerConnection.localDescription
-        }));
-        console.log('📤 Réponse SDP envoyée au smartphone');
+        while (iceCandidateQueue.length > 0) {
+            const candidate = iceCandidateQueue.shift();
+            if (candidate) {
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                } catch (e) {
+                    try { await peerConnection.addIceCandidate(new RTCIceCandidate(candidate)); } catch(e2) {}
+                }
+            }
+        }
+
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'answer',
+                sdp: peerConnection.localDescription
+            }));
+            console.log('📤 Réponse SDP envoyée au smartphone');
+        }
+    } catch (err) {
+        console.error('❌ Erreur négociation WebRTC sur PC:', err);
     }
 }
 
@@ -551,6 +592,12 @@ async function handleWebRTCOffer(sdp) {
 // ============================================================================
 
 function initMediaPipe() {
+    if (typeof Hands === 'undefined') {
+        console.warn('MediaPipe CDN pas encore chargé, nouvel essai dans 400ms...');
+        setTimeout(initMediaPipe, 400);
+        return;
+    }
+
     handsDetector = new Hands({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
@@ -566,15 +613,36 @@ function initMediaPipe() {
     console.log('🤖 MediaPipe Hands initialisé avec découplage 60 FPS');
 }
 
+// Écouteurs de démarrage immédiat du flux vidéo
+remoteVideo.addEventListener('play', () => {
+    console.log('▶️ Lecture du flux vidéo lancée');
+    if (waitingOverlay) waitingOverlay.style.display = 'none';
+    runAiInference();
+});
+remoteVideo.addEventListener('playing', () => {
+    if (waitingOverlay) waitingOverlay.style.display = 'none';
+});
+remoteVideo.addEventListener('loadedmetadata', () => {
+    console.log('📐 Dimensions vidéo reçues :', remoteVideo.videoWidth, remoteVideo.videoHeight);
+    if (overlayCanvas.width !== remoteVideo.videoWidth || overlayCanvas.height !== remoteVideo.videoHeight) {
+        overlayCanvas.width = remoteVideo.videoWidth || 640;
+        overlayCanvas.height = remoteVideo.videoHeight || 480;
+        if (teleRes) teleRes.textContent = `${overlayCanvas.width}x${overlayCanvas.height}`;
+    }
+    runAiInference();
+});
+
 // ============================================================================
 // --- 8. INFÉRENCE IA & BOUCLE DE RENDU DÉCOUPLÉE 60 FPS ---
 // ============================================================================
 
 let isAiProcessing = false;
 
-// Boucle d'inférence IA indépendante (s'adapte au débit de la caméra)
+// Boucle d'inférence IA résiliente (ne s'arrête jamais même avant l'arrivée du flux)
 async function runAiInference() {
-    if (!document.hidden && !isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
+    const isVideoPlaying = remoteVideo.readyState >= 2 && !remoteVideo.paused;
+
+    if (!document.hidden && !isAiProcessing && isVideoPlaying && handsDetector) {
         isAiProcessing = true;
         try {
             offCtx.drawImage(remoteVideo, 0, 0, 320, 240);
@@ -585,10 +653,11 @@ async function runAiInference() {
     }
 
     if (!document.hidden) {
-        if ('requestVideoFrameCallback' in remoteVideo) {
+        if (isVideoPlaying && 'requestVideoFrameCallback' in remoteVideo) {
             remoteVideo.requestVideoFrameCallback(runAiInference);
         } else {
-            setTimeout(runAiInference, 12);
+            // Si la vidéo est en attente ou s'initialise, vérifier toutes les 25ms
+            setTimeout(runAiInference, 25);
         }
     }
 }
