@@ -1,10 +1,10 @@
 @echo off
-title 🛡️ A.E.G.I.S — SPATIAL HAND & MOUSE CONTROLLER
+title 🛡️ A.E.G.I.S — SPATIAL HAND & MOUSE CONTROLLER 60 FPS
 chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ========================================================
-echo   LANCEMENT DU SYSTEME A.E.G.I.S (IRON MAN CONTROLLER)
+echo   LANCEMENT DU SYSTEME A.E.G.I.S 60 FPS (IRON MAN)
 echo ========================================================
 echo.
 
@@ -23,8 +23,8 @@ if exist "src\AegisLauncher.cs" (
     )
 )
 
-:: Fallback direct avec Node
+:: Fallback direct via Node
 echo [*] Demarrage direct via Node.js...
-start "" cmd /c "timeout /t 2 >nul & start https://localhost:8443/pc.html"
+start "" cmd /c "timeout /t 2 >nul & start http://localhost:8000/pc.html"
 node server.js
 pause

@@ -11,14 +11,14 @@ namespace Aegis
 
         static void Main(string[] args)
         {
-            Console.Title = "🛡️ A.E.G.I.S — Spatial Hand & Mouse Controller";
+            Console.Title = "🛡️ A.E.G.I.S — Spatial Hand & Mouse Controller 60 FPS";
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine(@"
 ╔══════════════════════════════════════════════════════════════╗
 ║        🛡️  A.E.G.I.S — SPATIAL HAND & MOUSE CONTROLLER        ║
-║         Contrôle Gestuel PC par Caméra Smartphone            ║
+║           Contrôle Gestuel PC 60 FPS & Zéro Latence          ║
 ╚══════════════════════════════════════════════════════════════╝
 ");
             Console.ResetColor();
@@ -36,9 +36,9 @@ namespace Aegis
                 return;
             }
 
-            // 1. Démarrer le serveur Node.js
+            // 1. Démarrer le serveur Node.js (Dual HTTP/HTTPS)
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("🚀 [1/3] Démarrage du serveur A.E.G.I.S...");
+            Console.WriteLine("🚀 [1/3] Initialisation du serveur A.E.G.I.S 60 FPS...");
             Console.ResetColor();
 
             ProcessStartInfo psiNode = new ProcessStartInfo
@@ -72,19 +72,19 @@ namespace Aegis
                 Environment.Exit(0);
             };
 
-            // 2. Pause pour laisser le serveur initialiser le port SSL et générer le QR code
-            Thread.Sleep(1800);
+            // Pause pour laisser le serveur initialiser les ports et le QR code
+            Thread.Sleep(1500);
 
-            // 3. Ouvrir l'application PC en mode Application autonome
+            // 2. Ouvrir l'application PC en mode Application autonome (Port 8000 : 0 problème SSL, connexion immédiate)
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("💻 [2/3] Ouverture de l'interface A.E.G.I.S en mode application...");
+            Console.WriteLine("💻 [2/3] Ouverture de la fenêtre A.E.G.I.S...");
             Console.ResetColor();
 
-            LaunchAppWindow("https://localhost:8443/pc.html");
+            LaunchAppWindow("http://localhost:8000/pc.html");
 
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("⚡ [3/3] Synchronisation souris et MediaPipe activée !");
-            Console.WriteLine("\n👉 Pour quitter proprement l'application, fermez cette fenêtre ou tapez 'Q'.\n");
+            Console.WriteLine("⚡ [3/3] Synchronisation souris Win32 & flux direct activés !");
+            Console.WriteLine("\n👉 Pour quitter, fermez cette fenêtre ou tapez 'Q'.\n");
             Console.ResetColor();
 
             while (true)
@@ -113,48 +113,48 @@ namespace Aegis
 
         static void LaunchAppWindow(string url)
         {
-            string edgePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Microsoft\Edge\Application\msedge.exe");
-            if (!File.Exists(edgePath))
-            {
-                edgePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Microsoft\Edge\Application\msedge.exe");
-            }
-
             string chromePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Google\Chrome\Application\chrome.exe");
             if (!File.Exists(chromePath))
             {
                 chromePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Google\Chrome\Application\chrome.exe");
             }
 
+            string edgePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Microsoft\Edge\Application\msedge.exe");
+            if (!File.Exists(edgePath))
+            {
+                edgePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Microsoft\Edge\Application\msedge.exe");
+            }
+
             try
             {
-                if (File.Exists(edgePath))
-                {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = edgePath,
-                        Arguments = "--app=" + url + " --ignore-certificate-errors",
-                        UseShellExecute = false
-                    });
-                    return;
-                }
-
+                // Préférer Google Chrome si présent pour une compatibilité WebRTC et MediaPipe maximale
                 if (File.Exists(chromePath))
                 {
                     Process.Start(new ProcessStartInfo
                     {
                         FileName = chromePath,
-                        Arguments = "--app=" + url + " --ignore-certificate-errors",
+                        Arguments = "--app=" + url + " --disable-features=Translate",
                         UseShellExecute = false
                     });
                     return;
                 }
 
-                // Fallback navigateur par défaut
+                if (File.Exists(edgePath))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = edgePath,
+                        Arguments = "--app=" + url + " --disable-features=Translate",
+                        UseShellExecute = false
+                    });
+                    return;
+                }
+
                 Process.Start(url);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Note ouverture navigateur: " + ex.Message);
+                Console.WriteLine("Ouverture navigateur: " + ex.Message);
                 try { Process.Start(url); } catch { }
             }
         }

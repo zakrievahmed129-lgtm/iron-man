@@ -7,14 +7,15 @@ const { spawn, execSync } = require('child_process');
 const { WebSocketServer, WebSocket } = require('ws');
 const qrcode = require('qrcode-terminal');
 
-// Détection de l'environnement Cloud (ex: Render.com, Glitch, Heroku)
 const IS_CLOUD = !!process.env.PORT;
-const PORT = process.env.PORT || 8443;
+const HTTP_PORT = 8000;  // Port HTTP pour le PC (0 erreur SSL, connexion instantanée)
+const HTTPS_PORT = process.env.PORT || 8443; // Port HTTPS pour le téléphone (Caméra WebRTC)
+
 const CERT_FILE = path.join(__dirname, 'cert.pem');
 const KEY_FILE = path.join(__dirname, 'key.pem');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// --- 1. DÉTECTION DE L'ADRESSE IP LOCALE (POUR DÉV LOCAL) ---
+// --- 1. DÉTECTION IP LOCALE ---
 function getLocalIP() {
     const interfaces = os.networkInterfaces();
     for (const name of Object.keys(interfaces)) {
@@ -39,22 +40,22 @@ function getLocalIP() {
 
 const LOCAL_IP = getLocalIP();
 
-// --- 2. GESTION DU CERTIFICAT SSL (UNIQUEMENT EN LOCAL) ---
+// --- 2. CERTIFICATS SSL AUTO-SIGNÉS ---
 if (!IS_CLOUD) {
     if (!fs.existsSync(CERT_FILE) || !fs.existsSync(KEY_FILE)) {
-        console.log('🔒 Génération automatique du certificat SSL auto-signé...');
+        console.log('🔒 Génération du certificat SSL local pour le smartphone...');
         try {
             execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${KEY_FILE}" -out "${CERT_FILE}" -days 365 -nodes -subj "/CN=${LOCAL_IP}"`, {
                 stdio: 'ignore'
             });
-            console.log('✅ Certificats SSL créés avec succès.');
+            console.log('✅ Certificats SSL générés.');
         } catch (err) {
             console.error('❌ Erreur OpenSSL:', err.message);
         }
     }
 }
 
-// --- 3. GESTIONNAIRE DE REQUÊTES STATIQUES ---
+// --- 3. GESTIONNAIRE STATIQUE HTTP ---
 const MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
@@ -95,31 +96,17 @@ function handleHttpRequest(req, res) {
     });
 }
 
-// Création du serveur (HTTP en Cloud car le proxy Render gère déjà le SSL officiel, HTTPS en local)
-let server;
-if (IS_CLOUD) {
-    server = http.createServer(handleHttpRequest);
-} else {
-    server = https.createServer({
-        key: fs.readFileSync(KEY_FILE),
-        cert: fs.readFileSync(CERT_FILE)
-    }, handleHttpRequest);
-}
-
-// --- 4. GESTION DU PONT SOURIS NATIF (AegisMouseBridge.exe) ---
+// --- 4. GESTION DU PONT SOURIS NATIF WIN32 ---
 let mouseBridge = null;
 let screenWidth = 1920;
 let screenHeight = 1080;
 
 function initMouseBridge() {
-    if (process.platform !== 'win32') {
-        console.log('ℹ️  Pont souris actif uniquement sous Windows.');
-        return;
-    }
+    if (process.platform !== 'win32') return;
 
     const bridgePath = path.join(__dirname, 'AegisMouseBridge.exe');
     if (!fs.existsSync(bridgePath)) {
-        console.warn('⚠️ AegisMouseBridge.exe non trouvé. Compilez AegisMouseBridge.cs.');
+        console.warn('⚠️ AegisMouseBridge.exe manquant.');
         return;
     }
 
@@ -138,7 +125,7 @@ function initMouseBridge() {
                     if (parts.length >= 3) {
                         screenWidth = parseInt(parts[1], 10) || 1920;
                         screenHeight = parseInt(parts[2], 10) || 1080;
-                        console.log(`🖥️  Écran Windows détecté : ${screenWidth} x ${screenHeight}`);
+                        console.log(`🖥️  Écran Windows : ${screenWidth} x ${screenHeight}`);
                         if (pcClient && pcClient.readyState === WebSocket.OPEN) {
                             pcClient.send(JSON.stringify({
                                 type: 'system_info',
@@ -152,47 +139,31 @@ function initMouseBridge() {
             }
         });
 
-        mouseBridge.on('close', (code) => {
-            console.log(`⚠️ AegisMouseBridge terminé (code ${code})`);
-            mouseBridge = null;
-        });
-
-        mouseBridge.on('error', (err) => {
-            console.error('❌ Erreur AegisMouseBridge:', err.message);
-            mouseBridge = null;
-        });
-
-        console.log('⚡ AegisMouseBridge (Win32 Native Mouse Engine) prêt !');
+        mouseBridge.on('close', () => { mouseBridge = null; });
+        mouseBridge.on('error', () => { mouseBridge = null; });
+        console.log('⚡ AegisMouseBridge (Moteur Win32 60 FPS) actif !');
     } catch (e) {
-        console.error('❌ Impossible de lancer AegisMouseBridge:', e.message);
+        console.error('❌ Erreur lancement mouseBridge:', e.message);
     }
 }
 
 function sendMouseCommand(cmd) {
     if (mouseBridge && mouseBridge.stdin && !mouseBridge.stdin.destroyed) {
-        try {
-            mouseBridge.stdin.write(cmd + '\n');
-        } catch (e) {
-            // Ignorer erreur d'écriture si fermé
-        }
+        try { mouseBridge.stdin.write(cmd + '\n'); } catch (e) {}
     }
 }
 
 process.on('exit', () => {
     if (mouseBridge && mouseBridge.stdin && !mouseBridge.stdin.destroyed) {
-        try {
-            mouseBridge.stdin.write('QUIT\n');
-        } catch (e) {}
+        try { mouseBridge.stdin.write('QUIT\n'); } catch (e) {}
     }
 });
 
-// --- 5. SERVEUR WEBSOCKET DE SIGNALISATION & CONTRÔLE SOURIS ---
-const wss = new WebSocketServer({ server });
-
+// --- 5. SIGNALISATION WEBSOCKET CENTRALISÉE ---
 let pcClient = null;
 let phoneClient = null;
 
-wss.on('connection', (ws) => {
+function handleWsConnection(ws) {
     ws.role = null;
 
     ws.on('message', (message) => {
@@ -201,12 +172,11 @@ wss.on('connection', (ws) => {
 
             switch (data.type) {
                 case 'register':
-                    ws.role = data.role; // 'pc' ou 'phone'
+                    ws.role = data.role;
                     console.log(`[+] Client connecté : ${ws.role.toUpperCase()}`);
 
                     if (ws.role === 'pc') {
                         pcClient = ws;
-                        // Envoi immédiat des caractéristiques de l'écran et de l'état du pont souris
                         pcClient.send(JSON.stringify({
                             type: 'system_info',
                             screenWidth,
@@ -231,7 +201,6 @@ wss.on('connection', (ws) => {
                     }
                     break;
 
-                // Commandes souris haute performance
                 case 'mouse_move':
                     if (typeof data.x === 'number' && typeof data.y === 'number') {
                         sendMouseCommand(`MOVE ${Math.round(data.x)} ${Math.round(data.y)}`);
@@ -239,29 +208,9 @@ wss.on('connection', (ws) => {
                     break;
 
                 case 'mouse_click':
-                    if (data.button === 'right') {
-                        sendMouseCommand('CLICK RIGHT');
-                    } else if (data.button === 'double') {
-                        sendMouseCommand('DOUBLE_CLICK');
-                    } else {
-                        sendMouseCommand('CLICK LEFT');
-                    }
-                    break;
-
-                case 'mouse_down':
-                    if (data.button === 'right') {
-                        sendMouseCommand('DOWN RIGHT');
-                    } else {
-                        sendMouseCommand('DOWN LEFT');
-                    }
-                    break;
-
-                case 'mouse_up':
-                    if (data.button === 'right') {
-                        sendMouseCommand('UP RIGHT');
-                    } else {
-                        sendMouseCommand('UP LEFT');
-                    }
+                    if (data.button === 'right') sendMouseCommand('CLICK RIGHT');
+                    else if (data.button === 'double') sendMouseCommand('DOUBLE_CLICK');
+                    else sendMouseCommand('CLICK LEFT');
                     break;
 
                 case 'mouse_scroll':
@@ -270,7 +219,6 @@ wss.on('connection', (ws) => {
                     }
                     break;
 
-                // Signalisation WebRTC
                 case 'offer':
                     if (pcClient && pcClient.readyState === WebSocket.OPEN) {
                         pcClient.send(JSON.stringify({ type: 'offer', sdp: data.sdp }));
@@ -296,7 +244,7 @@ wss.on('connection', (ws) => {
                     break;
             }
         } catch (e) {
-            console.error('Erreur message WS:', e);
+            console.error('Erreur WS message:', e);
         }
     });
 
@@ -315,35 +263,55 @@ wss.on('connection', (ws) => {
             }
         }
     });
-});
+}
 
-// --- 6. DÉMARRAGE DU SERVEUR ---
-server.listen(PORT, '0.0.0.0', () => {
-    console.clear();
-    console.log('\n============================================================');
-    console.log('     🛡️  PROJET A.E.G.I.S — SPATIAL HUD & MOUSE BRIDGE     ');
-    console.log('============================================================');
+// --- 6. CRÉATION DES SERVEURS DUAL HTTP/HTTPS ---
+if (IS_CLOUD) {
+    const server = http.createServer(handleHttpRequest);
+    const wss = new WebSocketServer({ server });
+    wss.on('connection', handleWsConnection);
 
-    // Démarrer le moteur de contrôle souris
-    initMouseBridge();
+    server.listen(HTTPS_PORT, '0.0.0.0', () => {
+        initMouseBridge();
+        console.log(`🚀 Mode Cloud actif sur le port ${HTTPS_PORT}`);
+    });
+} else {
+    // 1. Serveur HTTP pour le PC (0 erreur SSL, 0 avertissement, chargement instantané dans .exe)
+    const httpServer = http.createServer(handleHttpRequest);
+    const wssHttp = new WebSocketServer({ server: httpServer });
+    wssHttp.on('connection', handleWsConnection);
 
-    if (IS_CLOUD) {
-        console.log(`\n🚀 SERVEUR ACTIF EN MODE CLOUD SUR LE PORT : ${PORT}`);
-        console.log(`   Prêt pour Render.com / Glitch avec SSL externe automatique !`);
-    } else {
-        const pcUrl = `https://localhost:${PORT}/pc.html`;
-        const phoneUrl = `https://${LOCAL_IP}:${PORT}/phone.html`;
+    // 2. Serveur HTTPS pour le Smartphone (Requis pour l'accès caméra WebRTC)
+    const httpsServer = https.createServer({
+        key: fs.readFileSync(KEY_FILE),
+        cert: fs.readFileSync(CERT_FILE)
+    }, handleHttpRequest);
+    const wssHttps = new WebSocketServer({ server: httpsServer });
+    wssHttps.on('connection', handleWsConnection);
 
-        console.log(`\n💻 SUR TON PC :`);
-        console.log(`   👉 \x1b[36m${pcUrl}\x1b[0m\n`);
+    httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+        httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
+            console.clear();
+            console.log('\n============================================================');
+            console.log('     🛡️  PROJET A.E.G.I.S — SERVEUR ULTRA-RAPIDE 60 FPS     ');
+            console.log('============================================================');
 
-        console.log(`📱 SUR TON REDMI A3 :`);
-        console.log(`   👉 \x1b[32m${phoneUrl}\x1b[0m\n`);
-        console.log(`   OU SCANNE CE QR CODE AVEC TON TÉLÉPHONE :`);
+            initMouseBridge();
 
-        qrcode.generate(phoneUrl, { small: true }, (qr) => {
-            console.log(qr);
+            const pcUrl = `http://localhost:${HTTP_PORT}/pc.html`;
+            const phoneUrl = `https://${LOCAL_IP}:${HTTPS_PORT}/phone.html`;
+
+            console.log(`\n💻 APPLICATION SUR TON PC (0 ERREUR SSL / 100% FLUIDE) :`);
+            console.log(`   👉 \x1b[36m${pcUrl}\x1b[0m\n`);
+
+            console.log(`📱 SUR TON SMARTPHONE (REDMI A3, ETC.) :`);
+            console.log(`   👉 \x1b[32m${phoneUrl}\x1b[0m\n`);
+            console.log(`   OU SCANNE CE QR CODE :`);
+
+            qrcode.generate(phoneUrl, { small: true }, (qr) => {
+                console.log(qr);
+            });
+            console.log('============================================================\n');
         });
-    }
-    console.log('============================================================\n');
-});
+    });
+}
