@@ -3,7 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const { WebSocketServer, WebSocket } = require('ws');
 const qrcode = require('qrcode-terminal');
 
@@ -106,7 +106,87 @@ if (IS_CLOUD) {
     }, handleHttpRequest);
 }
 
-// --- 4. SERVEUR WEBSOCKET DE SIGNALISATION WEBRTC ---
+// --- 4. GESTION DU PONT SOURIS NATIF (AegisMouseBridge.exe) ---
+let mouseBridge = null;
+let screenWidth = 1920;
+let screenHeight = 1080;
+
+function initMouseBridge() {
+    if (process.platform !== 'win32') {
+        console.log('ℹ️  Pont souris actif uniquement sous Windows.');
+        return;
+    }
+
+    const bridgePath = path.join(__dirname, 'AegisMouseBridge.exe');
+    if (!fs.existsSync(bridgePath)) {
+        console.warn('⚠️ AegisMouseBridge.exe non trouvé. Compilez AegisMouseBridge.cs.');
+        return;
+    }
+
+    try {
+        mouseBridge = spawn(bridgePath, [], {
+            cwd: __dirname,
+            stdio: ['pipe', 'pipe', 'inherit']
+        });
+
+        mouseBridge.stdout.on('data', (chunk) => {
+            const lines = chunk.toString().split('\n');
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('READY ') || trimmed.startsWith('SCREEN ')) {
+                    const parts = trimmed.split(' ');
+                    if (parts.length >= 3) {
+                        screenWidth = parseInt(parts[1], 10) || 1920;
+                        screenHeight = parseInt(parts[2], 10) || 1080;
+                        console.log(`🖥️  Écran Windows détecté : ${screenWidth} x ${screenHeight}`);
+                        if (pcClient && pcClient.readyState === WebSocket.OPEN) {
+                            pcClient.send(JSON.stringify({
+                                type: 'system_info',
+                                screenWidth,
+                                screenHeight,
+                                bridgeReady: true
+                            }));
+                        }
+                    }
+                }
+            }
+        });
+
+        mouseBridge.on('close', (code) => {
+            console.log(`⚠️ AegisMouseBridge terminé (code ${code})`);
+            mouseBridge = null;
+        });
+
+        mouseBridge.on('error', (err) => {
+            console.error('❌ Erreur AegisMouseBridge:', err.message);
+            mouseBridge = null;
+        });
+
+        console.log('⚡ AegisMouseBridge (Win32 Native Mouse Engine) prêt !');
+    } catch (e) {
+        console.error('❌ Impossible de lancer AegisMouseBridge:', e.message);
+    }
+}
+
+function sendMouseCommand(cmd) {
+    if (mouseBridge && mouseBridge.stdin && !mouseBridge.stdin.destroyed) {
+        try {
+            mouseBridge.stdin.write(cmd + '\n');
+        } catch (e) {
+            // Ignorer erreur d'écriture si fermé
+        }
+    }
+}
+
+process.on('exit', () => {
+    if (mouseBridge && mouseBridge.stdin && !mouseBridge.stdin.destroyed) {
+        try {
+            mouseBridge.stdin.write('QUIT\n');
+        } catch (e) {}
+    }
+});
+
+// --- 5. SERVEUR WEBSOCKET DE SIGNALISATION & CONTRÔLE SOURIS ---
 const wss = new WebSocketServer({ server });
 
 let pcClient = null;
@@ -126,6 +206,14 @@ wss.on('connection', (ws) => {
 
                     if (ws.role === 'pc') {
                         pcClient = ws;
+                        // Envoi immédiat des caractéristiques de l'écran et de l'état du pont souris
+                        pcClient.send(JSON.stringify({
+                            type: 'system_info',
+                            screenWidth,
+                            screenHeight,
+                            bridgeReady: !!mouseBridge
+                        }));
+
                         if (phoneClient && phoneClient.readyState === WebSocket.OPEN) {
                             pcClient.send(JSON.stringify({ type: 'peer_status', status: 'phone_ready' }));
                             phoneClient.send(JSON.stringify({ type: 'peer_status', status: 'pc_ready' }));
@@ -143,6 +231,46 @@ wss.on('connection', (ws) => {
                     }
                     break;
 
+                // Commandes souris haute performance
+                case 'mouse_move':
+                    if (typeof data.x === 'number' && typeof data.y === 'number') {
+                        sendMouseCommand(`MOVE ${Math.round(data.x)} ${Math.round(data.y)}`);
+                    }
+                    break;
+
+                case 'mouse_click':
+                    if (data.button === 'right') {
+                        sendMouseCommand('CLICK RIGHT');
+                    } else if (data.button === 'double') {
+                        sendMouseCommand('DOUBLE_CLICK');
+                    } else {
+                        sendMouseCommand('CLICK LEFT');
+                    }
+                    break;
+
+                case 'mouse_down':
+                    if (data.button === 'right') {
+                        sendMouseCommand('DOWN RIGHT');
+                    } else {
+                        sendMouseCommand('DOWN LEFT');
+                    }
+                    break;
+
+                case 'mouse_up':
+                    if (data.button === 'right') {
+                        sendMouseCommand('UP RIGHT');
+                    } else {
+                        sendMouseCommand('UP LEFT');
+                    }
+                    break;
+
+                case 'mouse_scroll':
+                    if (typeof data.delta === 'number') {
+                        sendMouseCommand(`SCROLL ${Math.round(data.delta)}`);
+                    }
+                    break;
+
+                // Signalisation WebRTC
                 case 'offer':
                     if (pcClient && pcClient.readyState === WebSocket.OPEN) {
                         pcClient.send(JSON.stringify({ type: 'offer', sdp: data.sdp }));
@@ -189,12 +317,15 @@ wss.on('connection', (ws) => {
     });
 });
 
-// --- 5. DÉMARRAGE DU SERVEUR ---
+// --- 6. DÉMARRAGE DU SERVEUR ---
 server.listen(PORT, '0.0.0.0', () => {
     console.clear();
     console.log('\n============================================================');
-    console.log('     🛡️  PROJET A.E.G.I.S — SPATIAL HUD (WEBRTC BRIDGE)     ');
+    console.log('     🛡️  PROJET A.E.G.I.S — SPATIAL HUD & MOUSE BRIDGE     ');
     console.log('============================================================');
+
+    // Démarrer le moteur de contrôle souris
+    initMouseBridge();
 
     if (IS_CLOUD) {
         console.log(`\n🚀 SERVEUR ACTIF EN MODE CLOUD SUR LE PORT : ${PORT}`);

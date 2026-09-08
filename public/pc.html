@@ -21,7 +21,7 @@
                 <div class="logo-shield"></div>
                 <div>
                     <h1>A.E.G.I.S SPATIAL HUD</h1>
-                    <div class="sub">RÉCEPTEUR FLUX SMARTPHONE & DÉTECTION GESTUELLE</div>
+                    <div class="sub">CONTRÔLEUR SOURIS SPATIAL & FLUX SMARTPHONE WEBRTC 60 FPS</div>
                 </div>
             </div>
 
@@ -29,6 +29,10 @@
                 <div class="status-indicator">
                     <span class="dot" id="serverDot"></span>
                     <span id="serverStatus">SIGNALISATION : CONNEXION...</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="dot" id="mouseBridgeDot"></span>
+                    <span id="mouseBridgeStatus">SOURIS NATIVE : INITIALISATION...</span>
                 </div>
                 <div class="status-indicator">
                     <span class="dot" id="streamDot"></span>
@@ -47,7 +51,7 @@
                 </div>
 
                 <div class="video-container">
-                    <video id="remoteVideo" autoplay playsinline></video>
+                    <video id="remoteVideo" autoplay playsinline muted></video>
                     <canvas id="overlayCanvas"></canvas>
 
                     <!-- Overlay d'attente quand le téléphone n'est pas encore connecté -->
@@ -55,16 +59,109 @@
                         <div class="radar-scan"></div>
                         <div class="waiting-card">
                             <div class="phone-icon">📱</div>
-                            <h3>EN ATTENTE DU FLUX DU REDMI A3</h3>
-                            <p>Ouvre Chrome sur ton Redmi A3 et va sur l'adresse du téléphone ou scanne le QR code affiché dans le terminal.</p>
-                            <div class="tip-badge">ASTUCE : Clique sur "Paramètres avancés" si Chrome affiche une alerte SSL.</div>
+                            <h3>EN ATTENTE DU FLUX DU SMARTPHONE</h3>
+                            <p>Ouvre Chrome sur ton smartphone (Redmi A3, etc.) et accède à l'adresse indiquée dans le terminal ou scanne le QR code.</p>
+                            <div class="tip-badge">ASTUCE : Raccourci [ESPACE] pour activer/désactiver le contrôle souris à tout moment.</div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Side HUD Telemetry -->
+            <!-- Side HUD Telemetry & Mouse Controller -->
             <aside class="hud-sidebar">
+                <!-- PANNEAU MAÎTRE : CONTRÔLE SOURIS PC -->
+                <div class="panel-section mouse-control-section">
+                    <div class="section-header">
+                        <span class="bracket">[</span>
+                        <h3>CONTRÔLE SOURIS PC (WIN32)</h3>
+                        <span class="bracket">]</span>
+                    </div>
+
+                    <div class="mouse-master-toggle">
+                        <label class="switch-container mouse-main-switch">
+                            <input type="checkbox" id="chkMouseControl" checked>
+                            <span class="slider"></span>
+                            <span class="switch-label" id="lblMouseControl">CONTRÔLE SOURIS ACTIF</span>
+                        </label>
+                        <span class="key-badge" title="Raccourci clavier pour basculer le contrôle souris">[ESPACE]</span>
+                    </div>
+
+                    <div class="mouse-status-card state-nav" id="mouseStatusCard">
+                        <div class="mouse-status-dot" id="mouseStatusDot"></div>
+                        <div class="mouse-status-text">
+                            <div class="mouse-status-title" id="mouseStatusTitle">NAVIGATION SOURIS</div>
+                            <div class="mouse-status-sub" id="mouseStatusSub">Le curseur suit votre index</div>
+                        </div>
+                        <div class="mouse-action-badge" id="mouseActionBadge">EN LIGNE</div>
+                    </div>
+
+                    <!-- Jauge animée de défilement (Scroll) -->
+                    <div class="scroll-meter-box" id="scrollMeterBox">
+                        <div class="scroll-meter-header">
+                            <span class="scroll-icon" id="scrollIcon">↕️</span>
+                            <span class="scroll-title" id="scrollTitle">DÉFILEMENT (SCROLL)</span>
+                            <span class="scroll-val" id="scrollVal">0 px/s</span>
+                        </div>
+                        <div class="scroll-meter-track">
+                            <div class="scroll-meter-thumb" id="scrollThumb"></div>
+                        </div>
+                    </div>
+
+                    <!-- Réglages de précision et calibration -->
+                    <div class="mouse-settings-group">
+                        <div class="setting-slider-item">
+                            <div class="setting-label">
+                                <span>SENSIBILITÉ VITESSE</span>
+                                <span class="val" id="valSensitivity">1.4x</span>
+                            </div>
+                            <input type="range" id="rangeSensitivity" min="0.6" max="2.6" step="0.1" value="1.4">
+                        </div>
+
+                        <div class="setting-slider-item">
+                            <div class="setting-label">
+                                <span>LISSAGE (ANTI-TREMBLEUR)</span>
+                                <span class="val" id="valSmoothing">FLUIDE</span>
+                            </div>
+                            <input type="range" id="rangeSmoothing" min="1" max="5" step="1" value="3">
+                        </div>
+
+                        <div class="setting-slider-item">
+                            <div class="setting-label">
+                                <span>SEUIL CLIC (PINCEMENT)</span>
+                                <span class="val" id="valPinchThresh">68%</span>
+                            </div>
+                            <input type="range" id="rangePinchThresh" min="50" max="85" step="2" value="68">
+                        </div>
+
+                        <div class="setting-slider-item">
+                            <div class="setting-label">
+                                <span>VITESSE SCROLL</span>
+                                <span class="val" id="valScrollSpeed">2.0x</span>
+                            </div>
+                            <input type="range" id="rangeScrollSpeed" min="0.5" max="4.0" step="0.5" value="2.0">
+                        </div>
+
+                        <div class="setting-toggles-row">
+                            <label class="switch-container mini">
+                                <input type="checkbox" id="chkMirrorX" checked>
+                                <span class="slider"></span>
+                                <span class="switch-label">MIROIR X</span>
+                            </label>
+                            <label class="switch-container mini">
+                                <input type="checkbox" id="chkAntiSlip" checked>
+                                <span class="slider"></span>
+                                <span class="switch-label">ANTI-DÉRAPAGE</span>
+                            </label>
+                            <label class="switch-container mini">
+                                <input type="checkbox" id="chkHoloReticle" checked>
+                                <span class="slider"></span>
+                                <span class="switch-label">RÉTICULE</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GESTIONNAIRE GESTUEL -->
                 <div class="panel-section">
                     <div class="section-header">
                         <span class="bracket">[</span>
@@ -89,43 +186,49 @@
                     </div>
                 </div>
 
+                <!-- COORDONNÉES SPATIALES 3D & CURSEUR -->
                 <div class="panel-section">
                     <div class="section-header">
                         <span class="bracket">[</span>
-                        <h3>COORDONNÉES SPATIALES 3D</h3>
+                        <h3>COORDONNÉES CURSEUR & 3D</h3>
                         <span class="bracket">]</span>
                     </div>
 
                     <div class="coords-grid">
                         <div class="coord-item">
-                            <span class="axis">AXE X</span>
-                            <span class="val" id="coordX">0.000</span>
+                            <span class="axis">CURSEUR X</span>
+                            <span class="val" id="cursorScreenX">0 px</span>
                         </div>
                         <div class="coord-item">
-                            <span class="axis">AXE Y</span>
-                            <span class="val" id="coordY">0.000</span>
+                            <span class="axis">CURSEUR Y</span>
+                            <span class="val" id="cursorScreenY">0 px</span>
                         </div>
                         <div class="coord-item">
-                            <span class="axis">AXE Z (PROF.)</span>
+                            <span class="axis">PROFONDEUR Z</span>
                             <span class="val" id="coordZ">0.000</span>
                         </div>
                     </div>
                 </div>
 
+                <!-- TÉLÉMÉTRIE SYSTÈME -->
                 <div class="panel-section">
                     <div class="section-header">
                         <span class="bracket">[</span>
-                        <h3>TÉLÉMÉTRIE SYSTÈME</h3>
+                        <h3>TÉLÉMÉTRIE & PERFORMANCE</h3>
                         <span class="bracket">]</span>
                     </div>
 
                     <div class="telemetry-list">
                         <div class="tele-item">
+                            <span>RÉSOLUTION ÉCRAN PC :</span>
+                            <strong id="teleScreenRes">1920x1080</strong>
+                        </div>
+                        <div class="tele-item">
                             <span>RÉSOLUTION FLUX :</span>
                             <strong id="teleRes">---</strong>
                         </div>
                         <div class="tele-item">
-                            <span>FPS ENTRÉE VIDÉO :</span>
+                            <span>FPS FLUX VIDÉO :</span>
                             <strong id="teleFpsVideo">0</strong>
                         </div>
                         <div class="tele-item">
@@ -134,7 +237,7 @@
                         </div>
                         <div class="tele-item">
                             <span>LATENCE WEBRTC :</span>
-                            <strong id="telePing">&lt; 30 ms (LAN)</strong>
+                            <strong id="telePing">&lt; 20 ms (LAN)</strong>
                         </div>
                     </div>
                 </div>

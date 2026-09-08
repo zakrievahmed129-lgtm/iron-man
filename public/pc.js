@@ -1,45 +1,113 @@
-// --- PROJET A.E.G.I.S : RÉCEPTEUR PC & DÉTECTION GESTUELLE MEDIAPIPE ---
+// --- PROJET A.E.G.I.S : RÉCEPTEUR PC, DÉTECTION GESTUELLE OPTIMISÉE 60 FPS & SOURIS WIN32 ---
 
+// Éléments DOM Vidéo & Canvas
 const remoteVideo = document.getElementById('remoteVideo');
 const overlayCanvas = document.getElementById('overlayCanvas');
 const ctx = overlayCanvas.getContext('2d');
 const waitingOverlay = document.getElementById('waitingOverlay');
 
+// Statuts En-tête
 const serverDot = document.getElementById('serverDot');
 const serverStatus = document.getElementById('serverStatus');
+const mouseBridgeDot = document.getElementById('mouseBridgeDot');
+const mouseBridgeStatus = document.getElementById('mouseBridgeStatus');
 const streamDot = document.getElementById('streamDot');
 const streamStatus = document.getElementById('streamStatus');
 
+// Contrôles Souris
+const chkMouseControl = document.getElementById('chkMouseControl');
+const lblMouseControl = document.getElementById('lblMouseControl');
+const mouseStatusCard = document.getElementById('mouseStatusCard');
+const mouseStatusDot = document.getElementById('mouseStatusDot');
+const mouseStatusTitle = document.getElementById('mouseStatusTitle');
+const mouseStatusSub = document.getElementById('mouseStatusSub');
+const mouseActionBadge = document.getElementById('mouseActionBadge');
+
+// Jauge Défilement (Scroll)
+const scrollMeterBox = document.getElementById('scrollMeterBox');
+const scrollIcon = document.getElementById('scrollIcon');
+const scrollTitle = document.getElementById('scrollTitle');
+const scrollVal = document.getElementById('scrollVal');
+const scrollThumb = document.getElementById('scrollThumb');
+
+// Réglages Curseurs & Précision
+const rangeSensitivity = document.getElementById('rangeSensitivity');
+const valSensitivity = document.getElementById('valSensitivity');
+const rangeSmoothing = document.getElementById('rangeSmoothing');
+const valSmoothing = document.getElementById('valSmoothing');
+const rangePinchThresh = document.getElementById('rangePinchThresh');
+const valPinchThresh = document.getElementById('valPinchThresh');
+const rangeScrollSpeed = document.getElementById('rangeScrollSpeed');
+const valScrollSpeed = document.getElementById('valScrollSpeed');
+const chkMirrorX = document.getElementById('chkMirrorX');
+const chkAntiSlip = document.getElementById('chkAntiSlip');
+const chkHoloReticle = document.getElementById('chkHoloReticle');
+
+// Panneau Gestes & Coordonnées
 const gestureIcon = document.getElementById('gestureIcon');
 const gestureName = document.getElementById('gestureName');
 const gestureDesc = document.getElementById('gestureDesc');
 const pinchPercent = document.getElementById('pinchPercent');
 const pinchFill = document.getElementById('pinchFill');
 
-const coordX = document.getElementById('coordX');
-const coordY = document.getElementById('coordY');
+const cursorScreenX = document.getElementById('cursorScreenX');
+const cursorScreenY = document.getElementById('cursorScreenY');
 const coordZ = document.getElementById('coordZ');
 
+// Télémétrie
+const teleScreenRes = document.getElementById('teleScreenRes');
 const teleRes = document.getElementById('teleRes');
 const teleFpsVideo = document.getElementById('teleFpsVideo');
 const teleFpsAI = document.getElementById('teleFpsAI');
 const telePing = document.getElementById('telePing');
 const chkAudioFeedback = document.getElementById('chkAudioFeedback');
 
+// Variables Réseau & WebRTC
 let ws = null;
 let peerConnection = null;
 let handsDetector = null;
 let isProcessingFrame = false;
 let isLoopRunning = false;
 let audioCtx = null;
-let lastPinchState = false;
 let iceCandidateQueue = [];
 
-// Variables de stabilisation et lissage gestuel (Anti-hésitation)
+// Configuration Écran Windows & Curseur
+let screenWidth = window.screen.width || 1920;
+let screenHeight = window.screen.height || 1080;
+let smoothCursorX = screenWidth / 2;
+let smoothCursorY = screenHeight / 2;
+let targetCursorX = screenWidth / 2;
+let targetCursorY = screenHeight / 2;
+let isMouseBridgeReady = false;
+let lastSentX = -1;
+let lastSentY = -1;
+
+// Anti-dérapage : ancrage du curseur au moment du clic
+let lockedCursorX = null;
+let lockedCursorY = null;
+let isAnchorLocked = false;
+
+// Variables Gestes & Pincement (Click & Scroll)
 let smoothPinchPct = 0;
 let isPinchedState = false;
 let gestureHistory = [];
 let stableGesture = 'OPEN';
+
+let pinchStartTime = 0;
+let pinchStartHandY = 0;
+let pinchLastHandY = 0;
+let pinchStartScreenY = 0;
+let isScrollActive = false;
+let scrollAccumulator = 0;
+let lastClickTime = 0;
+
+// Geste Peace (Clic Droit)
+let peaceStartTime = 0;
+let peaceTriggered = false;
+
+// Effets visuels holographiques
+let shockwaves = [];
+let reticleAngle = 0;
 
 // Configuration WebRTC standard
 const rtcConfig = {
@@ -49,7 +117,7 @@ const rtcConfig = {
     ]
 };
 
-// --- 1. MOTEUR AUDIO SCI-FI (WEB AUDIO API) ---
+// --- 1. MOTEUR AUDIO PROCEDURAL SCI-FI ---
 function playSciFiTone(freq, duration, type = 'sine') {
     if (!chkAudioFeedback.checked) return;
     try {
@@ -65,9 +133,9 @@ function playSciFiTone(freq, duration, type = 'sine') {
 
         osc.type = type;
         osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(freq * 1.5, audioCtx.currentTime + duration);
+        osc.frequency.exponentialRampToValueAtTime(freq * 1.3, audioCtx.currentTime + duration);
 
-        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.06, audioCtx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
 
         osc.connect(gain);
@@ -76,11 +144,34 @@ function playSciFiTone(freq, duration, type = 'sine') {
         osc.start();
         osc.stop(audioCtx.currentTime + duration);
     } catch (e) {
-        // Ignorer blocage autoplay
+        // Ignorer blocage navigateur
     }
 }
 
-// --- 2. WEBSOCKET SIGNALISATION & KEEP-ALIVE ---
+function playClickSound() {
+    playSciFiTone(1400, 0.05, 'triangle');
+}
+
+function playDoubleClickSound() {
+    playSciFiTone(1300, 0.04, 'triangle');
+    setTimeout(() => playSciFiTone(1700, 0.05, 'triangle'), 60);
+}
+
+function playRightClickSound() {
+    playSciFiTone(800, 0.08, 'sine');
+    setTimeout(() => playSciFiTone(1100, 0.08, 'sine'), 40);
+}
+
+let lastScrollSoundTime = 0;
+function playScrollTickSound() {
+    const now = performance.now();
+    if (now - lastScrollSoundTime > 80) {
+        lastScrollSoundTime = now;
+        playSciFiTone(350, 0.03, 'sine');
+    }
+}
+
+// --- 2. WEBSOCKET SIGNALISATION & CONTRÔLE SOURIS ---
 function initWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}`;
@@ -91,7 +182,7 @@ function initWebSocket() {
         serverDot.className = 'dot connected';
         serverStatus.textContent = 'SIGNALISATION : CONNECTÉ';
         ws.send(JSON.stringify({ type: 'register', role: 'pc' }));
-        console.log('✅ Connecté au serveur de signalisation');
+        console.log('✅ Connecté au serveur A.E.G.I.S');
         startKeepAlive();
     };
 
@@ -100,13 +191,27 @@ function initWebSocket() {
             const data = JSON.parse(event.data);
 
             switch (data.type) {
+                case 'system_info':
+                    if (data.screenWidth && data.screenHeight) {
+                        screenWidth = data.screenWidth;
+                        screenHeight = data.screenHeight;
+                        teleScreenRes.textContent = `${screenWidth}x${screenHeight}`;
+                        console.log(`🖥️ Écran Windows synchronisé : ${screenWidth}x${screenHeight}`);
+                    }
+                    if (data.bridgeReady) {
+                        isMouseBridgeReady = true;
+                        mouseBridgeDot.className = 'dot connected';
+                        mouseBridgeStatus.textContent = 'SOURIS NATIVE : PRÊTE';
+                    }
+                    break;
+
                 case 'peer_status':
                     if (data.status === 'waiting_for_phone') {
                         streamDot.className = 'dot';
                         streamStatus.textContent = 'FLUX VIDÉO : EN ATTENTE DU TÉLÉPHONE...';
                     } else if (data.status === 'phone_ready') {
                         streamDot.className = 'dot';
-                        streamStatus.textContent = 'TÉLÉPHONE DÉTECTÉ, EN ATTENTE DU FLUX...';
+                        streamStatus.textContent = 'SMARTPHONE DÉTECTÉ, EN ATTENTE DU FLUX...';
                     } else if (data.status === 'phone_disconnected') {
                         streamDot.className = 'dot disconnected';
                         streamStatus.textContent = 'TÉLÉPHONE DÉCONNECTÉ';
@@ -120,7 +225,7 @@ function initWebSocket() {
                     break;
 
                 case 'offer':
-                    console.log('📥 Offre WebRTC reçue du téléphone');
+                    console.log('📥 Offre WebRTC 60 FPS reçue du smartphone');
                     await handleWebRTCOffer(data.sdp);
                     break;
 
@@ -140,6 +245,8 @@ function initWebSocket() {
     ws.onclose = () => {
         serverDot.className = 'dot disconnected';
         serverStatus.textContent = 'SIGNALISATION : DÉCONNECTÉ (RECONNEXION...)';
+        mouseBridgeDot.className = 'dot disconnected';
+        mouseBridgeStatus.textContent = 'SOURIS NATIVE : EN ATTENTE';
         setTimeout(initWebSocket, 2000);
     };
 }
@@ -150,6 +257,26 @@ function startKeepAlive() {
             ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
         }
     }, 5000);
+}
+
+function sendMouseMove(x, y) {
+    if (!chkMouseControl.checked || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const rx = Math.round(x);
+    const ry = Math.round(y);
+    if (rx === lastSentX && ry === lastSentY) return;
+    lastSentX = rx;
+    lastSentY = ry;
+    ws.send(JSON.stringify({ type: 'mouse_move', x: rx, y: ry }));
+}
+
+function sendMouseClick(button = 'left') {
+    if (!chkMouseControl.checked || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'mouse_click', button }));
+}
+
+function sendMouseScroll(delta) {
+    if (!chkMouseControl.checked || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'mouse_scroll', delta }));
 }
 
 // --- 3. GESTION DE L'OFFRE WEBRTC ---
@@ -171,11 +298,11 @@ async function handleWebRTCOffer(sdp) {
     };
 
     peerConnection.ontrack = (event) => {
-        console.log('📹 Piste vidéo distante reçue !');
+        console.log('📹 Flux vidéo distant reçu du smartphone !');
         remoteVideo.srcObject = event.streams[0];
         remoteVideo.play().catch(() => {});
         streamDot.className = 'dot connected';
-        streamStatus.textContent = 'FLUX VIDÉO : LIVE DIRECT';
+        streamStatus.textContent = 'FLUX VIDÉO : LIVE DIRECT 60 FPS';
         waitingOverlay.style.display = 'none';
         playSciFiTone(880, 0.15, 'sine');
     };
@@ -184,7 +311,7 @@ async function handleWebRTCOffer(sdp) {
         console.log('État WebRTC PC:', peerConnection.connectionState);
         if (peerConnection.connectionState === 'connected') {
             streamDot.className = 'dot connected';
-            streamStatus.textContent = 'FLUX VIDÉO : LIVE DIRECT';
+            streamStatus.textContent = 'FLUX VIDÉO : LIVE DIRECT 60 FPS';
         } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
             streamDot.className = 'dot disconnected';
             streamStatus.textContent = 'FLUX INTERROMPU';
@@ -211,28 +338,29 @@ async function handleWebRTCOffer(sdp) {
             type: 'answer',
             sdp: peerConnection.localDescription
         }));
-        console.log('📤 Réponse SDP envoyée au téléphone');
+        console.log('📤 Réponse SDP envoyée au smartphone');
     }
 }
 
-// --- 4. INITIALISATION MEDIAPIPE ---
+// --- 4. INITIALISATION MEDIAPIPE HANDS OPTIMISÉ ---
 function initMediaPipe() {
     handsDetector = new Hands({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
+    // Configuration haute vitesse : 1 seule main ciblée pour diviser la charge par 2 et assurer 60 FPS constants
     handsDetector.setOptions({
-        maxNumHands: 2,
+        maxNumHands: 1,
         modelComplexity: 0,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.65
     });
 
     handsDetector.onResults(onHandResults);
-    console.log('🤖 MediaPipe Hands (Lite 60FPS) prêt');
+    console.log('🤖 MediaPipe Hands 60 FPS prêt avec tracking ultra-réactif');
 }
 
-// --- 5. BOUCLE D'ANALYSE D'IMAGES ---
+// --- 5. BOUCLE FLUIDE (Zero-Stutter requestVideoFrameCallback) ---
 let videoFrames = 0;
 let aiFrames = 0;
 let lastMetricTime = performance.now();
@@ -257,13 +385,22 @@ async function processVideoFrame() {
         }
     }
 
-    requestAnimationFrame(processVideoFrame);
+    // Si le navigateur supporte requestVideoFrameCallback, on s'aligne exactement sur les frames décodées
+    if ('requestVideoFrameCallback' in remoteVideo) {
+        remoteVideo.requestVideoFrameCallback(processVideoFrame);
+    } else {
+        requestAnimationFrame(processVideoFrame);
+    }
 }
 
 function startVideoLoop() {
     if (!isLoopRunning) {
         isLoopRunning = true;
-        requestAnimationFrame(processVideoFrame);
+        if ('requestVideoFrameCallback' in remoteVideo) {
+            remoteVideo.requestVideoFrameCallback(processVideoFrame);
+        } else {
+            requestAnimationFrame(processVideoFrame);
+        }
     }
 }
 
@@ -277,31 +414,431 @@ setInterval(() => {
     lastMetricTime = now;
 }, 1000);
 
-// --- 6. DESSIN DU SQUELETTE HOLOGRAPHIQUE ---
+// --- 6. BIOMÉTRIE SPATIALE 3D, CLIC & SCROLL ULTRA-PRÉCIS ---
+function dist3d(p1, p2) {
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    const dz = (p1.z || 0) - (p2.z || 0);
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 function onHandResults(results) {
     aiFrames++;
     ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
+    drawActiveZoneGuide();
+    drawShockwaves();
+
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
         gestureIcon.textContent = '🖐️';
         gestureName.textContent = 'AUCUNE MAIN';
-        gestureDesc.textContent = 'Place ta main devant la caméra';
+        gestureDesc.textContent = 'Place ta main devant la caméra du téléphone';
         gestureName.style.color = '#ffffff';
         pinchPercent.textContent = '0%';
         pinchFill.style.width = '0%';
         smoothPinchPct = 0;
         isPinchedState = false;
-        lastPinchState = false;
+        isScrollActive = false;
+        isAnchorLocked = false;
         gestureHistory = [];
+        updateMouseCardState('pause', 'EN ATTENTE DE MAIN', 'Place ta main devant la caméra');
         return;
     }
 
-    for (let i = 0; i < results.multiHandLandmarks.length; i++) {
-        const landmarks = results.multiHandLandmarks[i];
-        const handedness = results.multiHandedness[i] ? results.multiHandedness[i].label : 'Main';
+    const landmarks = results.multiHandLandmarks[0];
+    const handedness = results.multiHandedness && results.multiHandedness[0] ? results.multiHandedness[0].label : 'Main';
 
-        drawHolographicHand(landmarks);
-        analyzeGestures(landmarks, handedness);
+    drawHolographicHand(landmarks);
+    processHandAndMouse(landmarks, handedness);
+}
+
+function processHandAndMouse(landmarks, handedness) {
+    const wrist = landmarks[0];
+    const thumbTip = landmarks[4];
+    const indexMcp = landmarks[5];
+    const indexPip = landmarks[6];
+    const indexTip = landmarks[8];
+    const middleMcp = landmarks[9];
+    const middlePip = landmarks[10];
+    const middleTip = landmarks[12];
+    const ringMcp = landmarks[13];
+    const ringPip = landmarks[14];
+    const ringTip = landmarks[16];
+    const pinkyMcp = landmarks[17];
+    const pinkyPip = landmarks[18];
+    const pinkyTip = landmarks[20];
+
+    coordZ.textContent = wrist.z ? wrist.z.toFixed(3) : '0.000';
+
+    // 1. Échelle de paume hybride (Hauteur + Largeur) : Invariante à l'inclinaison de la main
+    const palmWidth = dist3d(indexMcp, pinkyMcp);
+    const palmHeight = dist3d(wrist, middleMcp);
+    const palmScale = Math.max(0.045, (palmWidth * 1.1 + palmHeight) / 2);
+
+    // 2. Détection d'extension des doigts robuste par rapport aux articulations MCP
+    const isIndexExtended = dist3d(indexTip, indexMcp) > dist3d(indexPip, indexMcp) * 1.22;
+    const isMiddleExtended = dist3d(middleTip, middleMcp) > dist3d(middlePip, middleMcp) * 1.22;
+    const isRingExtended = dist3d(ringTip, ringMcp) > dist3d(ringPip, ringMcp) * 1.22;
+    const isPinkyExtended = dist3d(pinkyTip, pinkyMcp) > dist3d(pinkyPip, pinkyMcp) * 1.22;
+
+    // 3. Calcul du Pincement Normalisé (Pouce - Index) avec seuil configurable
+    const rawPinchRatio = dist3d(thumbTip, indexTip) / palmScale;
+    
+    // Normalisation : seuil haut (doigts écartés ~ 0.65), seuil bas (doigts joints ~ 0.22)
+    const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.68 - rawPinchRatio) / 0.44 * 100)));
+    smoothPinchPct = Math.round(smoothPinchPct * 0.55 + targetPinchPct * 0.45);
+
+    pinchPercent.textContent = `${smoothPinchPct}%`;
+    pinchFill.style.width = `${smoothPinchPct}%`;
+
+    // Seuil de déclenchement réglable depuis l'UI (défaut 68%)
+    const pinchTriggerThresh = parseInt(rangePinchThresh.value) || 68;
+    const pinchReleaseThresh = Math.max(35, pinchTriggerThresh - 24);
+
+    const wasPinched = isPinchedState;
+    if (!isPinchedState && smoothPinchPct >= pinchTriggerThresh) {
+        isPinchedState = true;
+    } else if (isPinchedState && smoothPinchPct <= pinchReleaseThresh) {
+        isPinchedState = false;
+    }
+
+    // 4. Détermination du geste instantané
+    let detectedRawGesture = 'OPEN';
+    if (isPinchedState) {
+        detectedRawGesture = 'PINCH';
+    } else if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+        detectedRawGesture = 'FIST';
+    } else if (isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+        detectedRawGesture = 'POINT';
+    } else if (isIndexExtended && isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+        detectedRawGesture = 'PEACE';
+    } else {
+        detectedRawGesture = 'OPEN';
+    }
+
+    gestureHistory.push(detectedRawGesture);
+    if (gestureHistory.length > 4) gestureHistory.shift();
+
+    const counts = {};
+    for (const g of gestureHistory) counts[g] = (counts[g] || 0) + 1;
+    let dominant = detectedRawGesture;
+    let maxC = 0;
+    for (const [g, count] of Object.entries(counts)) {
+        if (count > maxC) {
+            maxC = count;
+            dominant = g;
+        }
+    }
+    if (maxC >= 2) stableGesture = dominant;
+
+    // --- TRACKING CURSEUR SOURIS & ANTI-DÉRAPAGE ---
+    const rawX = isPinchedState ? (thumbTip.x + indexTip.x) / 2 : indexTip.x;
+    const rawY = isPinchedState ? (thumbTip.y + indexTip.y) / 2 : indexTip.y;
+
+    const normX = chkMirrorX.checked ? (1.0 - rawX) : rawX;
+    const normY = rawY;
+
+    // Zone active calibrée (marges de 12% pour atteindre aisément les 4 bords)
+    const minX = 0.12, maxX = 0.88;
+    const minY = 0.12, maxY = 0.88;
+    const clampedX = Math.max(minX, Math.min(maxX, normX));
+    const clampedY = Math.max(minY, Math.min(maxY, normY));
+    const boxX = (clampedX - minX) / (maxX - minX);
+    const boxY = (clampedY - minY) / (maxY - minY);
+
+    const sens = parseFloat(rangeSensitivity.value) || 1.4;
+    targetCursorX = Math.max(0, Math.min(screenWidth, ((boxX - 0.5) * sens + 0.5) * screenWidth));
+    targetCursorY = Math.max(0, Math.min(screenHeight, ((boxY - 0.5) * sens + 0.5) * screenHeight));
+
+    // Anti-dérapage : si l'option est active et qu'un pincement est enclenché, on ancre la position
+    if (chkAntiSlip.checked && isPinchedState && !isScrollActive) {
+        if (!isAnchorLocked) {
+            lockedCursorX = smoothCursorX;
+            lockedCursorY = smoothCursorY;
+            isAnchorLocked = true;
+        }
+    } else {
+        isAnchorLocked = false;
+    }
+
+    if (isAnchorLocked) {
+        // Position ancrée sur la cible pendant le clic : zéro dérapage
+        smoothCursorX = lockedCursorX;
+        smoothCursorY = lockedCursorY;
+    } else {
+        // Lissage adaptatif réactif
+        const dx = targetCursorX - smoothCursorX;
+        const dy = targetCursorY - smoothCursorY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist >= 1.6) {
+            const smoothLevel = parseInt(rangeSmoothing.value) || 3;
+            const baseAlpha = [0.70, 0.52, 0.36, 0.24, 0.14][smoothLevel - 1] || 0.36;
+            const velocityBoost = Math.min(0.55, dist / 240);
+            const alpha = Math.min(0.94, baseAlpha + velocityBoost);
+
+            smoothCursorX += dx * alpha;
+            smoothCursorY += dy * alpha;
+        }
+    }
+
+    cursorScreenX.textContent = `${Math.round(smoothCursorX)} px`;
+    cursorScreenY.textContent = `${Math.round(smoothCursorY)} px`;
+
+    if (chkHoloReticle.checked) {
+        drawHoloReticle(rawX * overlayCanvas.width, rawY * overlayCanvas.height, isPinchedState, isScrollActive);
+    }
+
+    // --- LOGIQUE PINCEMENT : CLIC & SCROLL ---
+    if (!wasPinched && isPinchedState) {
+        pinchStartTime = performance.now();
+        pinchStartHandY = normY;
+        pinchLastHandY = normY;
+        pinchStartScreenY = smoothCursorY;
+        isScrollActive = false;
+        scrollAccumulator = 0;
+        playClickSound();
+        spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#ff0077');
+    }
+
+    if (isPinchedState) {
+        const deltaScreenY = smoothCursorY - pinchStartScreenY;
+        const deltaHandY = normY - pinchStartHandY;
+
+        // Détection de défilement : si la main se déplace verticalement pendant le pincement
+        if (!isScrollActive && (Math.abs(deltaScreenY) > 22 || Math.abs(deltaHandY) > 0.04)) {
+            isScrollActive = true;
+            isAnchorLocked = false; // Libérer le curseur pour le scroll
+            scrollMeterBox.classList.add('active');
+        }
+
+        if (isScrollActive) {
+            const frameDeltaY = normY - pinchLastHandY;
+            const scrollMultiplier = parseFloat(rangeScrollSpeed.value) || 2.0;
+
+            const scrollDelta = -frameDeltaY * 2400 * scrollMultiplier;
+            scrollAccumulator += scrollDelta;
+
+            if (Math.abs(scrollAccumulator) >= 20) {
+                sendMouseScroll(scrollAccumulator);
+                playScrollTickSound();
+
+                const direction = scrollAccumulator > 0 ? 'HAUT' : 'BAS';
+                scrollIcon.textContent = scrollAccumulator > 0 ? '⬆️' : '⬇️';
+                scrollTitle.textContent = `DÉFILEMENT ${direction}`;
+                scrollVal.textContent = `${Math.round(Math.abs(scrollAccumulator))} px`;
+                const thumbPos = Math.max(10, Math.min(90, 50 - (scrollAccumulator / 150) * 40));
+                scrollThumb.style.left = `${thumbPos}%`;
+
+                scrollAccumulator = 0;
+            }
+
+            pinchLastHandY = normY;
+            updateMouseCardState('scroll', 'DÉFILEMENT (SCROLL)', 'Glissez la main en haut ou en bas pour scroller');
+        } else {
+            updateMouseCardState('click', 'PINCEMENT MAINTENU', 'Relâchez rapidement pour cliquer');
+        }
+    }
+
+    if (wasPinched && !isPinchedState) {
+        const pinchDuration = performance.now() - pinchStartTime;
+        scrollMeterBox.classList.remove('active');
+
+        if (isScrollActive) {
+            isScrollActive = false;
+        } else if (pinchDuration < 380) {
+            const now = performance.now();
+            if (now - lastClickTime < 320) {
+                sendMouseClick('double');
+                playDoubleClickSound();
+                spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#00ff88');
+                updateMouseCardState('click', 'DOUBLE CLIC DÉTECTÉ', 'Deux clics rapides envoyés');
+            } else {
+                sendMouseClick('left');
+                playClickSound();
+                spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#ff0077');
+                updateMouseCardState('click', 'CLIC GAUCHE DÉCLENCHÉ', 'Clic précis envoyé');
+            }
+            lastClickTime = now;
+        }
+        isScrollActive = false;
+        isAnchorLocked = false;
+    }
+
+    // Clic Droit (Geste Peace)
+    if (stableGesture === 'PEACE' && !isPinchedState) {
+        if (peaceStartTime === 0) {
+            peaceStartTime = performance.now();
+            peaceTriggered = false;
+        } else if (!peaceTriggered && (performance.now() - peaceStartTime > 340)) {
+            sendMouseClick('right');
+            playRightClickSound();
+            spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#00f2fe');
+            peaceTriggered = true;
+            updateMouseCardState('click', 'CLIC DROIT DÉCLENCHÉ', 'Menu contextuel ouvert');
+        }
+    } else {
+        peaceStartTime = 0;
+        peaceTriggered = false;
+    }
+
+    // Transmission mouvement souris Windows
+    if (chkMouseControl.checked) {
+        if (stableGesture === 'FIST') {
+            updateMouseCardState('pause', 'CURSEUR EN PAUSE (POING)', 'Ouvrez la main ou pointez l\'index');
+        } else if (isScrollActive) {
+            // Mode défilement : curseur stable
+        } else if (!isPinchedState || (performance.now() - pinchStartTime < 200)) {
+            sendMouseMove(smoothCursorX, smoothCursorY);
+            if (!isPinchedState && stableGesture !== 'PEACE') {
+                updateMouseCardState('nav', 'NAVIGATION SOURIS', 'Curseur synchronisé avec l\'index');
+            }
+        }
+    } else {
+        updateMouseCardState('disabled', 'CONTRÔLE SOURIS DÉSACTIVÉ', 'Appuyez sur [ESPACE] pour activer');
+    }
+
+    updateGestureUI(stableGesture, handedness);
+}
+
+function updateMouseCardState(state, title, sub) {
+    mouseStatusCard.className = `mouse-status-card state-${state}`;
+    mouseStatusTitle.textContent = title;
+    mouseStatusSub.textContent = sub;
+
+    switch (state) {
+        case 'nav':
+            mouseActionBadge.textContent = 'ACTIF';
+            mouseActionBadge.style.color = 'var(--cyan)';
+            mouseActionBadge.style.borderColor = 'var(--cyan)';
+            break;
+        case 'click':
+            mouseActionBadge.textContent = 'CLIC';
+            mouseActionBadge.style.color = '#ff0077';
+            mouseActionBadge.style.borderColor = '#ff0077';
+            break;
+        case 'scroll':
+            mouseActionBadge.textContent = 'SCROLL';
+            mouseActionBadge.style.color = 'var(--yellow)';
+            mouseActionBadge.style.borderColor = 'var(--yellow)';
+            break;
+        case 'pause':
+            mouseActionBadge.textContent = 'PAUSE';
+            mouseActionBadge.style.color = '#ff8800';
+            mouseActionBadge.style.borderColor = '#ff8800';
+            break;
+        case 'disabled':
+            mouseActionBadge.textContent = 'OFF';
+            mouseActionBadge.style.color = '#888888';
+            mouseActionBadge.style.borderColor = '#888888';
+            break;
+    }
+}
+
+// --- 7. RENDU HOLOGRAPHIQUE & SQUELETTE ---
+function drawActiveZoneGuide() {
+    const w = overlayCanvas.width;
+    const h = overlayCanvas.height;
+    const minX = 0.12 * w;
+    const maxX = 0.88 * w;
+    const minY = 0.12 * h;
+    const maxY = 0.88 * h;
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0, 242, 254, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 6]);
+    ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+
+    const cornerSize = 14;
+    ctx.setLineDash([]);
+    ctx.strokeStyle = '#00f2fe';
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(minX, minY + cornerSize); ctx.lineTo(minX, minY); ctx.lineTo(minX + cornerSize, minY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(maxX - cornerSize, minY); ctx.lineTo(maxX, minY); ctx.lineTo(maxX, minY + cornerSize);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(minX, maxY - cornerSize); ctx.lineTo(minX, maxY); ctx.lineTo(minX + cornerSize, maxY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(maxX - cornerSize, maxY); ctx.lineTo(maxX, maxY); ctx.lineTo(maxX, maxY - cornerSize);
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+function drawHoloReticle(x, y, isPinched, isScrolling) {
+    reticleAngle += 0.04;
+    ctx.save();
+    ctx.translate(x, y);
+
+    const mainColor = isPinched ? '#ff0077' : (isScrolling ? '#ffb703' : '#00f2fe');
+
+    ctx.beginPath();
+    ctx.arc(0, 0, isPinched ? 10 : 16, 0, 2 * Math.PI);
+    ctx.strokeStyle = mainColor;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = mainColor;
+    ctx.shadowBlur = 12;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, 3, 0, 2 * Math.PI);
+    ctx.fillStyle = mainColor;
+    ctx.fill();
+
+    ctx.rotate(reticleAngle);
+    const radius = 24;
+    for (let a = 0; a < 4; a++) {
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, a * Math.PI / 2 + 0.15, (a + 1) * Math.PI / 2 - 0.15);
+        ctx.strokeStyle = mainColor;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+
+    ctx.restore();
+}
+
+function spawnShockwave(x, y, color) {
+    shockwaves.push({
+        x,
+        y,
+        radius: 8,
+        maxRadius: 45,
+        alpha: 0.9,
+        color
+    });
+}
+
+function drawShockwaves() {
+    for (let i = shockwaves.length - 1; i >= 0; i--) {
+        const sw = shockwaves[i];
+        sw.radius += 2.5;
+        sw.alpha -= 0.05;
+
+        if (sw.alpha <= 0 || sw.radius >= sw.maxRadius) {
+            shockwaves.splice(i, 1);
+            continue;
+        }
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(sw.x, sw.y, sw.radius, 0, 2 * Math.PI);
+        ctx.strokeStyle = sw.color;
+        ctx.globalAlpha = Math.max(0, sw.alpha);
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = sw.color;
+        ctx.shadowBlur = 10;
+        ctx.stroke();
+        ctx.restore();
     }
 }
 
@@ -353,107 +890,6 @@ function drawHolographicHand(landmarks) {
     ctx.shadowBlur = 0;
 }
 
-// --- 7. CLASSIFICATEUR DE GESTES MATHÉMATIQUE INVARIANT (ANTI-HÉSITATION) ---
-function dist3d(p1, p2) {
-    const dx = p1.x - p2.x;
-    const dy = p1.y - p2.y;
-    const dz = (p1.z || 0) - (p2.z || 0);
-    return Math.sqrt(dx * dx + dy * dy + dz * dz);
-}
-
-function analyzeGestures(landmarks, handedness) {
-    const wrist = landmarks[0];
-    const thumbTip = landmarks[4];
-    const indexMcp = landmarks[5];
-    const indexPip = landmarks[6];
-    const indexTip = landmarks[8];
-    const middleMcp = landmarks[9];
-    const middlePip = landmarks[10];
-    const middleTip = landmarks[12];
-    const ringMcp = landmarks[13];
-    const ringPip = landmarks[14];
-    const ringTip = landmarks[16];
-    const pinkyMcp = landmarks[17];
-    const pinkyPip = landmarks[18];
-    const pinkyTip = landmarks[20];
-
-    // Téléportation coordonnées 3D
-    coordX.textContent = wrist.x.toFixed(3);
-    coordY.textContent = wrist.y.toFixed(3);
-    coordZ.textContent = wrist.z.toFixed(3);
-
-    // 1. Échelle de la main (Distance Poignet ➔ Base du majeur)
-    // Permet de normaliser toutes les distances peu importe si la main est près ou loin !
-    const palmScale = Math.max(0.04, dist3d(wrist, middleMcp));
-
-    // 2. Détection d'extension des doigts (Invariante à la rotation et à l'angle de la main)
-    const isIndexExtended = dist3d(indexTip, wrist) > dist3d(indexPip, wrist) * 1.15 && dist3d(indexTip, wrist) > dist3d(indexMcp, wrist) * 1.25;
-    const isMiddleExtended = dist3d(middleTip, wrist) > dist3d(middlePip, wrist) * 1.15 && dist3d(middleTip, wrist) > dist3d(middleMcp, wrist) * 1.25;
-    const isRingExtended = dist3d(ringTip, wrist) > dist3d(ringPip, wrist) * 1.15 && dist3d(ringTip, wrist) > dist3d(ringMcp, wrist) * 1.25;
-    const isPinkyExtended = dist3d(pinkyTip, wrist) > dist3d(pinkyPip, wrist) * 1.15 && dist3d(pinkyTip, wrist) > dist3d(pinkyMcp, wrist) * 1.25;
-
-    // 3. Calcul du Pincement Normalisé (Pouce - Index)
-    const rawPinchRatio = dist3d(thumbTip, indexTip) / palmScale;
-    
-    // Normalisation : < 0.28 = 100% pincé, > 0.70 = 0% pincé
-    const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.70 - rawPinchRatio) / 0.42 * 100)));
-    
-    // Lissage exponentiel (Moving Average) : jauge fluide sans tremblement
-    smoothPinchPct = Math.round(smoothPinchPct * 0.65 + targetPinchPct * 0.35);
-
-    pinchPercent.textContent = `${smoothPinchPct}%`;
-    pinchFill.style.width = `${smoothPinchPct}%`;
-
-    // Hystérésis de pincement (évite tout clignotement au seuil de clic)
-    if (!isPinchedState && smoothPinchPct >= 72) {
-        isPinchedState = true;
-    } else if (isPinchedState && smoothPinchPct <= 45) {
-        isPinchedState = false;
-    }
-
-    // 4. Détermination du geste brut instantané
-    let detectedRawGesture = 'OPEN';
-    if (isPinchedState) {
-        detectedRawGesture = 'PINCH';
-    } else if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
-        detectedRawGesture = 'FIST';
-    } else if (isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
-        detectedRawGesture = 'POINT';
-    } else if (isIndexExtended && isMiddleExtended && !isRingExtended && !isPinkyExtended) {
-        detectedRawGesture = 'PEACE';
-    } else {
-        detectedRawGesture = 'OPEN';
-    }
-
-    // 5. Stabilisateur temporel anti-hésitation (Filtre par vote majoritaire sur les 5 dernières frames)
-    gestureHistory.push(detectedRawGesture);
-    if (gestureHistory.length > 5) {
-        gestureHistory.shift();
-    }
-
-    const counts = {};
-    for (const g of gestureHistory) {
-        counts[g] = (counts[g] || 0) + 1;
-    }
-
-    let dominantGesture = detectedRawGesture;
-    let maxCount = 0;
-    for (const [g, count] of Object.entries(counts)) {
-        if (count > maxCount) {
-            maxCount = count;
-            dominantGesture = g;
-        }
-    }
-
-    // Seuil de confirmation : au moins 3 frames cohérentes sur 5 pour basculer
-    if (maxCount >= 3) {
-        stableGesture = dominantGesture;
-    }
-
-    // 6. Mise à jour de l'affichage avec le geste stable
-    updateGestureUI(stableGesture, handedness);
-}
-
 function updateGestureUI(gesture, handedness) {
     const handLabel = handedness ? handedness.toUpperCase() : 'MAIN';
 
@@ -461,24 +897,18 @@ function updateGestureUI(gesture, handedness) {
         case 'PINCH':
             gestureIcon.textContent = '🤏';
             gestureName.textContent = `PINCEMENT (${handLabel})`;
-            gestureDesc.textContent = 'Action de saisie / clic validée !';
+            gestureDesc.textContent = isScrollActive ? 'Défilement (Scroll) actif' : 'Action clic validée';
             gestureName.style.color = '#ff0077';
-            if (!lastPinchState) {
-                playSciFiTone(1200, 0.08, 'triangle');
-                lastPinchState = true;
-            }
             break;
 
         case 'FIST':
-            lastPinchState = false;
             gestureIcon.textContent = '✊';
             gestureName.textContent = `POING FERMÉ (${handLabel})`;
-            gestureDesc.textContent = 'Verrouillage / arrêt du mouvement';
+            gestureDesc.textContent = 'Verrouillage / Curseur en pause';
             gestureName.style.color = '#ffb703';
             break;
 
         case 'POINT':
-            lastPinchState = false;
             gestureIcon.textContent = '☝️';
             gestureName.textContent = `POINTAGE (${handLabel})`;
             gestureDesc.textContent = 'Curseur spatial laser directionnel';
@@ -486,16 +916,14 @@ function updateGestureUI(gesture, handedness) {
             break;
 
         case 'PEACE':
-            lastPinchState = false;
             gestureIcon.textContent = '✌️';
             gestureName.textContent = `VICTOIRE / 2 DOIGTS (${handLabel})`;
-            gestureDesc.textContent = 'Sélection secondaire / raccourci';
+            gestureDesc.textContent = 'Déclencheur de clic droit';
             gestureName.style.color = '#00ff88';
             break;
 
         case 'OPEN':
         default:
-            lastPinchState = false;
             gestureIcon.textContent = '🖐️';
             gestureName.textContent = `MAIN OUVERTE (${handLabel})`;
             gestureDesc.textContent = 'Mode navigation spatiale libre';
@@ -504,8 +932,44 @@ function updateGestureUI(gesture, handedness) {
     }
 }
 
-// Initialisation
+// --- 8. ÉCOUTEURS D'ÉVÉNEMENTS & RACCOURCIS CLAVIER ---
+function setupEventListeners() {
+    chkMouseControl.addEventListener('change', () => {
+        lblMouseControl.textContent = chkMouseControl.checked ? 'CONTRÔLE SOURIS ACTIF' : 'CONTRÔLE SOURIS EN PAUSE';
+        playSciFiTone(chkMouseControl.checked ? 800 : 400, 0.1, 'sine');
+    });
+
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space' || e.code === 'KeyM') {
+            if (e.target.tagName !== 'INPUT') {
+                e.preventDefault();
+                chkMouseControl.checked = !chkMouseControl.checked;
+                chkMouseControl.dispatchEvent(new Event('change'));
+            }
+        }
+    });
+
+    rangeSensitivity.addEventListener('input', () => {
+        valSensitivity.textContent = `${rangeSensitivity.value}x`;
+    });
+
+    const smoothLabels = ['MINIMAL', 'RÉACTIF', 'FLUIDE', 'TRÈS FLUIDE', 'ULTRA'];
+    rangeSmoothing.addEventListener('input', () => {
+        valSmoothing.textContent = smoothLabels[parseInt(rangeSmoothing.value) - 1] || 'FLUIDE';
+    });
+
+    rangePinchThresh.addEventListener('input', () => {
+        valPinchThresh.textContent = `${rangePinchThresh.value}%`;
+    });
+
+    rangeScrollSpeed.addEventListener('input', () => {
+        valScrollSpeed.textContent = `${parseFloat(rangeScrollSpeed.value).toFixed(1)}x`;
+    });
+}
+
+// --- 9. INITIALISATION AU CHARGEMENT ---
 window.addEventListener('DOMContentLoaded', () => {
+    setupEventListeners();
     initWebSocket();
     initMediaPipe();
     startVideoLoop();

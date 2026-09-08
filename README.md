@@ -1,53 +1,59 @@
-# 🛡️ A.E.G.I.S — Spatial HUD & Hand Tracking
+# 🛡️ A.E.G.I.S — Spatial HUD & Windows Mouse Controller
 
-> **Transformez votre smartphone (Redmi A3, etc.) en capteur spatial WebRTC pour contrôler votre PC avec vos mains nues comme dans Iron Man !**
+> **Transformez votre smartphone (Redmi A3, etc.) en capteur spatial WebRTC pour contrôler votre PC Windows avec vos mains nues comme dans Iron Man !**
 
 ---
 
 ## ⚡ Fonctionnalités Clés
 
-- **📹 Pont Vidéo WebRTC P2P Zéro Latence** : Flux vidéo HD direct (30 à 60 FPS) entre le smartphone et le PC via réseau local Wi-Fi ou Cloud.
-- **🤖 Détection des Mains MediaPipe IA** : Traitement en temps réel des 21 articulations de chaque main sur le PC.
-- **🤏 Reconnaissance Gestuelle Holographique** :
-  - `Pincement (Pouce + Index)` avec jauge de précision et déclencheur audio.
-  - `Main Ouverte` (mode navigation spatiale libre).
-  - `Poing Fermé` (verrouillage / arrêt).
-  - `Pointage Index` (curseur directionnel laser).
-- **📐 Coordonnées Spatiales 3D** : Affichage en direct de la position spatiale $(X, Y, Z)$ des mains.
-- **🔊 Synthétiseur Sonore Sci-Fi** : Sons procéduraux via la Web Audio API sans aucun fichier externe.
-- **🔋 Anti-Veille Écran Automatique (WakeLock API)** : Empêche le téléphone de s'éteindre pendant la session.
+- **🖱️ Contrôle Réel de la Souris Windows (Win32 Native Engine)** :
+  - Synchronisation fluide du curseur avec l'index ou la main (< 1 ms de latence).
+  - Lissage adaptatif anti-tremblement et zone active calibrée (coins d'écran accessibles sans sortir du champ visuel).
+- **🤏 Gestuelle de Pincement (Pouce + Index)** :
+  - `Pincement rapide (< 350 ms)` : **Clic gauche** instantané.
+  - `Deux pincements rapides` : **Double-clic**.
+  - `Pincement maintenu + déplacement vertical` : **Défilement (Scroll) haut / bas** avec vitesse proportionnelle.
+- **✌️ Geste Peace (2 Doigts / Victoire)** : **Clic droit** (menu contextuel).
+- **✊ Poing Fermé (Fist)** : **Gel / Pause du curseur** pour reposer le bras sans déplacer la souris.
+- **⌨️ Raccourci Clavier Universel** : Touche `[Espace]` ou `[M]` pour activer/désactiver le contrôle souris à tout moment.
+- **🚀 Application Exécutable Windows (`Aegis.exe`)** :
+  - Double-cliquez simplement sur `Aegis.exe` (ou `LANCER_AEGIS.bat`) pour tout démarrer automatiquement en mode application dédiée sans barre d'adresse.
+- **📹 Pont Vidéo WebRTC P2P Zéro Latence** : Flux vidéo HD direct entre le smartphone et le PC via Wi-Fi local.
+- **🤖 Détection MediaPipe Hands IA** : Traitement à 60 FPS des 21 articulations 3D de chaque main.
+- **🔊 Synthétiseur Sonore Sci-Fi** : Sons procéduraux haptiques (clics, double clics, crans de scroll, pause).
 
 ---
 
-## 🚀 Démarrage Local
+## 🚀 Démarrage Ultra-Simple
 
-### 1. Prérequis
-- [Node.js](https://nodejs.org/) (v18+)
+### Méthode 1 : L'Exécutable Windows (Recommandé)
+Double-cliquez simplement sur **`Aegis.exe`** (situé dans `iron-man-main` ou `LANCER_AEGIS.bat` à la racine) :
+1. Le serveur démarre automatiquement.
+2. L'interface HUD s'ouvre dans une fenêtre d'application dédiée.
+3. Scannez le QR code affiché dans la console avec votre smartphone.
 
-### 2. Installation & Lancement
+### Méthode 2 : Lancement Manuel
 ```bash
-# Installer les dépendances
+cd iron-man-main
 npm install
-
-# Démarrer le serveur
 npm start
 ```
-
 - **Sur votre PC** : Ouvrez `https://localhost:8443/pc.html`
-- **Sur votre Téléphone** : Ouvrez le lien affiché ou scannez le QR code généré dans le terminal !
+- **Sur votre Téléphone** : Ouvrez l'adresse affichée ou scannez le QR code.
 
 ---
 
-## ☁️ Déploiement Cloud en 1 Clic (ex: Render.com)
+## 🎮 Tableau des Commandes Gestuelles
 
-1. Créez un compte gratuit sur [Render.com](https://render.com).
-2. Cliquez sur **New +** ➔ **Web Service**.
-3. Liez ce dépôt GitHub : `https://github.com/zakrievahmed129-lgtm/iron-man`.
-4. Paramètres :
-   - **Environment** : `Node`
-   - **Build Command** : `npm install`
-   - **Start Command** : `node server.js`
-5. Cliquez sur **Create Web Service** ! Render vous fournira une URL HTTPS officielle avec cadenas vert (ex: `https://mon-aegis.onrender.com`).
+| Geste de la main | Action Windows | Description |
+| :--- | :--- | :--- |
+| ☝️ **Index pointé / Main ouverte** | **Déplacement du curseur** | Le curseur suit votre index sur tout l'écran. |
+| 🤏 **Pincement bref** | **Clic Gauche** | Tapotez le pouce et l'index brièvement (< 350 ms). |
+| 🤏🤏 **Double pincement** | **Double-Clic** | Deux pincements rapides successifs. |
+| 🤏↕️ **Pincement maintenu + glissement haut/bas** | **Molette / Scroll** | Main vers le haut = Défilement vers le haut.<br>Main vers le bas = Défilement vers le bas. |
+| ✌️ **Geste 2 doigts (Peace)** | **Clic Droit** | Maintenez l'index et le majeur levés 350 ms. |
+| ✊ **Poing fermé** | **Pause du curseur** | Fige le curseur pour reposer la main sans bouger la souris. |
+| ⌨️ **Touche [Espace] ou [M]** | **Activer / Désactiver** | Bascule générale du contrôle souris. |
 
 ---
 
@@ -59,14 +65,19 @@ npm start
    ├── Stream Matériel WebRTC (H.264 / VP8)
    └── WakeLock API (Anti-veille écran)
           │
-          ▼ (Flux Vidéo P2P LAN / WAN)
+          ▼ (Flux Vidéo P2P LAN direct)
           │
 💻 PC Récepteur
-   ├── Réception WebRTC
-   ├── Rendu Canvas Holographique
+   ├── Réception WebRTC & Rendu Canvas
    ├── MediaPipe Hands IA (21 articulations 3D)
-   ├── Classificateur de Gestes & Pincement
-   └── Moteur Audio Web Audio API
+   ├── Détecteur Gestuel (Pincement, Clic, Scroll, Poing)
+   ├── WebSocket Local (Commandes gestuelles)
+   │      │
+   │      ▼ (Pipe IPC Stdin/Stdout < 1ms)
+   └── AegisMouseBridge.exe (Win32 API: SetCursorPos & mouse_event)
+          │
+          ▼
+   🖥️ Windows OS (Curseur, Clics, Défilement réels)
 ```
 
 ---

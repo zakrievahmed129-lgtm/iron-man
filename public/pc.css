@@ -453,3 +453,286 @@ body {
     letter-spacing: 1px;
     color: #c9d8ee;
 }
+
+/* ========================================================= */
+/* --- STYLES DU CONTRÔLEUR SOURIS WIN32 A.E.G.I.S ---       */
+/* ========================================================= */
+
+.mouse-control-section {
+    border-color: rgba(0, 242, 254, 0.4) !important;
+    box-shadow: inset 0 0 15px rgba(0, 242, 254, 0.05);
+}
+
+.mouse-master-toggle {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(0, 242, 254, 0.07);
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(0, 242, 254, 0.3);
+    margin-bottom: 12px;
+}
+
+.key-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--cyan);
+    background: rgba(0, 0, 0, 0.5);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(0, 242, 254, 0.4);
+    box-shadow: 0 0 8px var(--cyan-glow);
+    user-select: none;
+}
+
+/* Carte d'état dynamique de la souris */
+.mouse-status-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border);
+    margin-bottom: 12px;
+    transition: all 0.25s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.mouse-status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--cyan);
+    box-shadow: 0 0 10px var(--cyan);
+    transition: all 0.2s ease;
+}
+
+.mouse-status-text {
+    flex: 1;
+}
+
+.mouse-status-title {
+    font-family: var(--font-orbitron);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #ffffff;
+    transition: color 0.2s ease;
+}
+
+.mouse-status-sub {
+    font-size: 12px;
+    color: #8da4c4;
+}
+
+.mouse-action-badge {
+    font-family: var(--font-orbitron);
+    font-size: 10px;
+    letter-spacing: 1px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(0, 242, 254, 0.15);
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+}
+
+/* États dynamiques de la carte */
+.mouse-status-card.state-nav {
+    border-color: rgba(0, 242, 254, 0.4);
+}
+.mouse-status-card.state-nav .mouse-status-dot {
+    background: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan);
+}
+.mouse-status-card.state-nav .mouse-status-title {
+    color: var(--cyan);
+}
+
+.mouse-status-card.state-click {
+    border-color: #ff0077;
+    background: rgba(255, 0, 119, 0.12);
+}
+.mouse-status-card.state-click .mouse-status-dot {
+    background: #ff0077;
+    box-shadow: 0 0 16px #ff0077;
+    transform: scale(1.3);
+}
+.mouse-status-card.state-click .mouse-status-title {
+    color: #ff0077;
+}
+
+.mouse-status-card.state-scroll {
+    border-color: var(--yellow);
+    background: rgba(255, 183, 3, 0.12);
+}
+.mouse-status-card.state-scroll .mouse-status-dot {
+    background: var(--yellow);
+    box-shadow: 0 0 16px var(--yellow);
+}
+.mouse-status-card.state-scroll .mouse-status-title {
+    color: var(--yellow);
+}
+
+.mouse-status-card.state-pause {
+    border-color: #ff8800;
+    background: rgba(255, 136, 0, 0.1);
+}
+.mouse-status-card.state-pause .mouse-status-dot {
+    background: #ff8800;
+    box-shadow: 0 0 10px #ff8800;
+}
+.mouse-status-card.state-pause .mouse-status-title {
+    color: #ff8800;
+}
+
+.mouse-status-card.state-disabled {
+    border-color: rgba(255, 255, 255, 0.1);
+    opacity: 0.6;
+}
+.mouse-status-card.state-disabled .mouse-status-dot {
+    background: #555555;
+    box-shadow: none;
+}
+.mouse-status-card.state-disabled .mouse-status-title {
+    color: #888888;
+}
+
+/* Jauge de défilement (Scroll Meter) */
+.scroll-meter-box {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 183, 3, 0.3);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    display: none;
+}
+
+.scroll-meter-box.active {
+    display: block;
+    animation: pulseBorder 1s infinite alternate;
+}
+
+@keyframes pulseBorder {
+    from { border-color: rgba(255, 183, 3, 0.3); }
+    to { border-color: rgba(255, 183, 3, 0.8); }
+}
+
+.scroll-meter-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    font-family: var(--font-orbitron);
+    color: var(--yellow);
+    margin-bottom: 6px;
+}
+
+.scroll-meter-track {
+    width: 100%;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+}
+
+.scroll-meter-thumb {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 20px;
+    height: 100%;
+    background: var(--yellow);
+    box-shadow: 0 0 10px var(--yellow);
+    border-radius: 4px;
+    transform: translateX(-50%);
+    transition: left 0.1s linear, width 0.1s linear;
+}
+
+/* Réglages et curseurs */
+.mouse-settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.setting-slider-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.setting-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    font-family: var(--font-orbitron);
+    color: #8da4c4;
+}
+
+.setting-label .val {
+    color: var(--cyan);
+    font-family: var(--font-mono);
+    font-weight: 600;
+}
+
+.setting-slider-item input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 5px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    outline: none;
+}
+
+.setting-slider-item input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--cyan);
+    cursor: pointer;
+    box-shadow: 0 0 8px var(--cyan);
+    transition: transform 0.1s ease;
+}
+
+.setting-slider-item input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+
+.setting-toggles-row {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 6px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.switch-container.mini .slider {
+    width: 28px;
+    height: 16px;
+}
+
+.switch-container.mini .slider::after {
+    width: 10px;
+    height: 10px;
+}
+
+.switch-container.mini input:checked + .slider::after {
+    transform: translateX(12px);
+}
+
+.switch-container.mini .switch-label {
+    font-size: 10px;
+}
+
