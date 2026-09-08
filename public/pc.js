@@ -758,9 +758,13 @@ function onHandResults(results) {
 function analyzeHandAndTarget(landmarks, handedness) {
     const now = performance.now();
     const wrist = landmarks[0];
+    const thumbCmc = landmarks[1];
+    const thumbMcp = landmarks[2];
+    const thumbIp = landmarks[3];
     const thumbTip = landmarks[4];
     const indexMcp = landmarks[5];
     const indexPip = landmarks[6];
+    const indexDip = landmarks[7];
     const indexTip = landmarks[8];
     const middleMcp = landmarks[9];
     const middlePip = landmarks[10];
@@ -774,27 +778,34 @@ function analyzeHandAndTarget(landmarks, handedness) {
 
     if (coordZ) coordZ.textContent = wrist.z ? wrist.z.toFixed(3) : '0.000';
 
-    // 1. Échelle de paume hybride 3D
-    const palmWidth = dist3d(indexMcp, pinkyMcp);
-    const palmHeight = dist3d(wrist, middleMcp);
-    const palmScale = Math.max(0.045, (palmWidth * 1.1 + palmHeight) / 2);
+    // 1. Échelle anatomique 3D invariante à l'angle (somme des phalanges rigides de l'index et du pouce)
+    // Ne s'écrase JAMAIS même quand la main est tournée, de profil ou inclinée !
+    const indexFingerLen = dist3d(indexMcp, indexPip) + dist3d(indexPip, indexDip) + dist3d(indexDip, indexTip);
+    const thumbFingerLen = dist3d(thumbMcp, thumbIp) + dist3d(thumbIp, thumbTip);
+    const anatomicalScale = Math.max(0.06, (indexFingerLen * 0.65 + thumbFingerLen * 0.35));
 
     // 2. Extension des doigts
-    const isIndexExtended = dist3d(indexTip, indexMcp) > dist3d(indexPip, indexMcp) * 1.20;
-    const isMiddleExtended = dist3d(middleTip, middleMcp) > dist3d(middlePip, middleMcp) * 1.20;
-    const isRingExtended = dist3d(ringTip, ringMcp) > dist3d(ringPip, ringMcp) * 1.20;
-    const isPinkyExtended = dist3d(pinkyTip, pinkyMcp) > dist3d(pinkyPip, pinkyMcp) * 1.20;
+    const isIndexExtended = dist3d(indexTip, indexMcp) > dist3d(indexPip, indexMcp) * 1.15;
+    const isMiddleExtended = dist3d(middleTip, middleMcp) > dist3d(middlePip, middleMcp) * 1.15;
+    const isRingExtended = dist3d(ringTip, ringMcp) > dist3d(ringPip, ringMcp) * 1.15;
+    const isPinkyExtended = dist3d(pinkyTip, pinkyMcp) > dist3d(pinkyPip, pinkyMcp) * 1.15;
 
-    // 3. Calcul du Pincement Normalisé
-    const rawPinchRatio = dist3d(thumbTip, indexTip) / palmScale;
-    const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.68 - rawPinchRatio) / 0.44 * 100)));
-    smoothPinchPct = Math.round(smoothPinchPct * 0.45 + targetPinchPct * 0.55);
+    // 3. Calcul du Pincement Multi-Points 3D (Détection omnidirectionnelle robuste)
+    // Mesure la distance réelle minimale : contact bout-à-bout ou contact pouce contre phalange de l'index
+    const dTipTip = dist3d(thumbTip, indexTip);
+    const dTipDip = dist3d(thumbTip, indexDip);
+    const dTipPip = dist3d(thumbTip, indexPip);
+    const minPinchDist = Math.min(dTipTip, dTipDip * 1.06, dTipPip * 1.25);
 
-    pinchPercent.textContent = `${smoothPinchPct}%`;
-    pinchFill.style.width = `${smoothPinchPct}%`;
+    const pinchRatio = minPinchDist / anatomicalScale;
+    const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.55 - pinchRatio) / 0.38 * 100)));
+    smoothPinchPct = Math.round(smoothPinchPct * 0.35 + targetPinchPct * 0.65);
 
-    const pinchTriggerThresh = parseInt(rangePinchThresh.value) || 68;
-    const pinchReleaseThresh = Math.max(35, pinchTriggerThresh - 24);
+    if (pinchPercent) pinchPercent.textContent = `${smoothPinchPct}%`;
+    if (pinchFill) pinchFill.style.width = `${smoothPinchPct}%`;
+
+    const pinchTriggerThresh = parseInt(rangePinchThresh.value) || 55;
+    const pinchReleaseThresh = Math.max(28, pinchTriggerThresh - 20);
 
     const wasPinched = isPinchedState;
     if (!isPinchedState && smoothPinchPct >= pinchTriggerThresh) {
@@ -832,9 +843,9 @@ function analyzeHandAndTarget(landmarks, handedness) {
     }
     if (maxC >= 2) stableGesture = dominant;
 
-    // --- TRACKING CURSEUR SOURIS & FILTRAGE 1€ ---
-    const rawX = isPinchedState ? (thumbTip.x + indexTip.x) / 2 : indexTip.x;
-    const rawY = isPinchedState ? (thumbTip.y + indexTip.y) / 2 : indexTip.y;
+    // 5. Coordonnées du pointeur : TOUJOURS indexTip (aucun saut artificiel vers le bas !)
+    const rawX = indexTip.x;
+    const rawY = indexTip.y;
 
     const normX = chkMirrorX.checked ? (1.0 - rawX) : rawX;
     const normY = rawY;
@@ -855,13 +866,11 @@ function analyzeHandAndTarget(landmarks, handedness) {
     const filteredX = filterX.filter(rawScreenX, now);
     const filteredY = filterY.filter(rawScreenY, now);
 
-    // Calcul de vitesse réelle entre frames caméra pour prédiction et continuité
+    // Calcul de vitesse
     if (prevDetectionTime > 0) {
         const dtDetect = Math.max(8, now - prevDetectionTime);
         const vx = (filteredX - prevRawScreenX) / dtDetect;
         const vy = (filteredY - prevRawScreenY) / dtDetect;
-
-        // Lissage doux du vecteur vitesse (anti-bruit caméra)
         smoothVelocityX = smoothVelocityX * 0.35 + vx * 0.65;
         smoothVelocityY = smoothVelocityY * 0.35 + vy * 0.65;
     }
@@ -874,18 +883,26 @@ function analyzeHandAndTarget(landmarks, handedness) {
     destCursorX = filteredX;
     destCursorY = filteredY;
 
-    // Anti-dérapage au moment exact du pincement
-    if (chkAntiSlip.checked && isPinchedState && !isScrollActive) {
-        if (!isAnchorLocked) {
+    // 6. SYSTÈME AIM-LOCK MAGNÉTIQUE (ANTI-DÉRAPAGE PRÉ-CLIC)
+    // Dès que les doigts commencent à se rapprocher pour pincer (>= 28%),
+    // on fige immédiatement la position à l'endroit précis visé.
+    // Même si le doigt plonge de 30px en se repliant, le curseur RESTE sur le bouton !
+    const prePinchThreshold = 28;
+    if (chkAntiSlip && chkAntiSlip.checked && !isScrollActive) {
+        if (smoothPinchPct < prePinchThreshold) {
+            // En visée libre : on mémorise la position exacte sur le bouton
             lockedCursorX = smoothCursorX;
             lockedCursorY = smoothCursorY;
+            isAnchorLocked = false;
+        } else {
+            // Pincement en cours ou validé : VERROUILLAGE ACTIF SUR LE BOUTON
             isAnchorLocked = true;
         }
     } else {
         isAnchorLocked = false;
     }
 
-    // --- LOGIQUE PINCEMENT : CLIC & SCROLL ---
+    // 7. LOGIQUE PINCEMENT : CLIC & SCROLL
     if (!wasPinched && isPinchedState) {
         pinchStartTime = now;
         pinchStartHandY = normY;
@@ -901,8 +918,8 @@ function analyzeHandAndTarget(landmarks, handedness) {
         const deltaScreenY = smoothCursorY - pinchStartScreenY;
         const deltaHandY = normY - pinchStartHandY;
 
-        // Activation du défilement : pincement maintenu avec translation verticale
-        if (!isScrollActive && (Math.abs(deltaScreenY) > 22 || Math.abs(deltaHandY) > 0.04)) {
+        // Détection de défilement (Scroll) : translation franche de la main
+        if (!isScrollActive && (Math.abs(deltaScreenY) > 28 || Math.abs(deltaHandY) > 0.05)) {
             isScrollActive = true;
             isAnchorLocked = false;
             scrollMeterBox.classList.add('active');
@@ -930,9 +947,9 @@ function analyzeHandAndTarget(landmarks, handedness) {
             }
 
             pinchLastHandY = normY;
-            updateMouseCardState('scroll', 'DÉFILEMENT (SCROLL)', 'Glissez la main en haut ou en bas pour scroller');
+            updateMouseCardState('scroll', 'DÉFILEMENT (SCROLL)', 'Glissez la main en haut ou en bas');
         } else {
-            updateMouseCardState('click', 'PINCEMENT MAINTENU', 'Relâchez rapidement pour cliquer');
+            updateMouseCardState('click', 'PINCEMENT VERROUILLÉ (AIM-LOCK)', 'Curseur ancré sur le bouton, relâchez pour cliquer');
         }
     }
 
@@ -942,7 +959,7 @@ function analyzeHandAndTarget(landmarks, handedness) {
 
         if (isScrollActive) {
             isScrollActive = false;
-        } else if (pinchDuration < 380) {
+        } else if (pinchDuration < 450) {
             const clickNow = now;
             if (clickNow - lastClickTime < 320) {
                 sendMouseClick('double');
@@ -953,12 +970,11 @@ function analyzeHandAndTarget(landmarks, handedness) {
                 sendMouseClick('left');
                 playClickSound();
                 spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#ff0077');
-                updateMouseCardState('click', 'CLIC GAUCHE DÉCLENCHÉ', 'Clic précis envoyé');
+                updateMouseCardState('click', 'CLIC GAUCHE VALIDÉ', 'Clic précis envoyé sur le bouton');
             }
             lastClickTime = clickNow;
         }
         isScrollActive = false;
-        isAnchorLocked = false;
     }
 
     // Clic Droit (Geste Peace)
@@ -1033,9 +1049,18 @@ function stepContinuousGlide() {
 
     // Dessin du réticule holographique
     if (!document.hidden && chkHoloReticle && chkHoloReticle.checked && latestLandmarks) {
-        const rawX = isPinchedState ? (latestLandmarks[4].x + latestLandmarks[8].x) / 2 : latestLandmarks[8].x;
-        const rawY = isPinchedState ? (latestLandmarks[4].y + latestLandmarks[8].y) / 2 : latestLandmarks[8].y;
-        drawHoloReticle(rawX * overlayCanvas.width, rawY * overlayCanvas.height, isPinchedState, isScrollActive);
+        let reticleCanvasX;
+        let reticleCanvasY;
+        if (isAnchorLocked && screenWidth > 0 && screenHeight > 0) {
+            reticleCanvasX = (lockedCursorX / screenWidth) * overlayCanvas.width;
+            reticleCanvasY = (lockedCursorY / screenHeight) * overlayCanvas.height;
+        } else {
+            const rawX = chkMirrorX.checked ? (1.0 - latestLandmarks[8].x) : latestLandmarks[8].x;
+            const rawY = latestLandmarks[8].y;
+            reticleCanvasX = rawX * overlayCanvas.width;
+            reticleCanvasY = rawY * overlayCanvas.height;
+        }
+        drawHoloReticle(reticleCanvasX, reticleCanvasY, isPinchedState || isAnchorLocked, isScrollActive);
     }
 
     // Transmission continue à Windows à 60 Hz
