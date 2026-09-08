@@ -1,6 +1,6 @@
-// --- PROJET A.E.G.I.S : MOTEUR SPATIAL DÉCOUPLÉ 60 FPS & CONTRÔLEUR SOURIS WIN32 ---
+// --- PROJET A.E.G.I.S : MOTEUR SPATIAL 60 FPS, FILTRE 1€ ANTI-TREMBLEMENT & PERSISTANCE ARRIÈRE-PLAN ---
 
-// 1. Éléments DOM Vidéo & Canvas
+// 1. Éléments DOM
 const remoteVideo = document.getElementById('remoteVideo');
 const overlayCanvas = document.getElementById('overlayCanvas');
 const ctx = overlayCanvas.getContext('2d');
@@ -103,13 +103,13 @@ let lastClickTime = 0;
 let peaceStartTime = 0;
 let peaceTriggered = false;
 
-// Effets visuels holographiques & Reticule
+// Effets visuels holographiques & Réticule
 let shockwaves = [];
 let reticleAngle = 0;
 let latestLandmarks = null;
 let latestHandedness = 'MAIN';
 
-// Canvas Hors-Écran Dédié pour Inférence IA Ultra-Rapide (320x240)
+// Canvas Hors-Écran Dédié pour Inférence IA 60 FPS (320x240)
 const offscreenCanvas = document.createElement('canvas');
 offscreenCanvas.width = 320;
 offscreenCanvas.height = 240;
@@ -128,7 +128,159 @@ const rtcConfig = {
     ]
 };
 
-// --- 1. MOTEUR AUDIO SCI-FI HAPTIQUE ---
+// ============================================================================
+// --- 2. FILTRE 1€ (ONE EURO FILTER) : DOUCEUR & ZÉRO TREMBLEMENT ---
+// ============================================================================
+
+class LowPassFilter {
+    constructor(alpha, initVal = 0) {
+        this.s = initVal;
+        this.setAlpha(alpha);
+        this.initialized = false;
+    }
+    setAlpha(alpha) {
+        this.alpha = Math.max(0, Math.min(1, alpha));
+    }
+    filter(val) {
+        if (!this.initialized) {
+            this.s = val;
+            this.initialized = true;
+            return val;
+        }
+        this.s = this.alpha * val + (1.0 - this.alpha) * this.s;
+        return this.s;
+    }
+    last() { return this.s; }
+}
+
+class OneEuroFilter {
+    constructor(freq = 60, minCutoff = 0.5, beta = 0.015, dCutoff = 1.0) {
+        this.freq = freq;
+        this.minCutoff = minCutoff;
+        this.beta = beta;
+        this.dCutoff = dCutoff;
+        this.xFilter = new LowPassFilter(this.alpha(this.minCutoff));
+        this.dxFilter = new LowPassFilter(this.alpha(this.dCutoff));
+        this.lastTime = null;
+    }
+    alpha(cutoff) {
+        const te = 1.0 / this.freq;
+        const tau = 1.0 / (2 * Math.PI * cutoff);
+        return 1.0 / (1.0 + tau / te);
+    }
+    setCutoffs(minCutoff, beta) {
+        this.minCutoff = minCutoff;
+        this.beta = beta;
+    }
+    filter(val, timestamp = performance.now()) {
+        if (this.lastTime !== null && timestamp > this.lastTime) {
+            this.freq = Math.max(1, 1000.0 / (timestamp - this.lastTime));
+        }
+        this.lastTime = timestamp;
+        const prevX = this.xFilter.last();
+        const dx = this.xFilter.initialized ? (val - prevX) * this.freq : 0;
+        const edx = this.dxFilter.filter(dx);
+        const cutoff = this.minCutoff + this.beta * Math.abs(edx);
+        this.xFilter.setAlpha(this.alpha(cutoff));
+        return this.xFilter.filter(val);
+    }
+}
+
+// Filtres 1€ pour X et Y
+const filterX = new OneEuroFilter(60, 0.5, 0.015);
+const filterY = new OneEuroFilter(60, 0.5, 0.015);
+
+// Mise à jour des coefficients selon le curseur de lissage
+const SMOOTH_PRESETS = [
+    { label: 'RÉACTIF', minCutoff: 1.2, beta: 0.04, ease: 0.80 },
+    { label: 'FLUIDE', minCutoff: 0.75, beta: 0.025, ease: 0.55 },
+    { label: 'TRÈS DOUX', minCutoff: 0.45, beta: 0.015, ease: 0.38 },
+    { label: 'ANTI-TREMBLEUR', minCutoff: 0.30, beta: 0.008, ease: 0.26 },
+    { label: 'ULTRA SOYEUX', minCutoff: 0.18, beta: 0.004, ease: 0.18 }
+];
+
+function updateSmoothingProfile() {
+    const level = parseInt(rangeSmoothing.value) || 3;
+    const preset = SMOOTH_PRESETS[level - 1] || SMOOTH_PRESETS[2];
+    valSmoothing.textContent = preset.label;
+    filterX.setCutoffs(preset.minCutoff, preset.beta);
+    filterY.setCutoffs(preset.minCutoff, preset.beta);
+}
+
+// ============================================================================
+// --- 3. PERSISTANCE EN ARRIÈRE-PLAN (MÊME RÉDUIT !) ---
+// ============================================================================
+
+// A. Maintien actif de l'AudioContext pour empêcher Chromium de décharger l'onglet
+let bgKeepAliveAudio = null;
+function initBackgroundAudio() {
+    try {
+        bgKeepAliveAudio = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = bgKeepAliveAudio.createOscillator();
+        const gain = bgKeepAliveAudio.createGain();
+        gain.gain.value = 0.00001; // Inaudible
+        osc.connect(gain);
+        gain.connect(bgKeepAliveAudio.destination);
+        osc.start();
+        console.log('⚡ Keep-Alive Audio actif (empêche la mise en veille de la fenêtre)');
+    } catch(e) {}
+}
+
+// B. Heartbeat Web Worker 60 Hz : continue de tourner quand la fenêtre est minimisée !
+const workerBlob = new Blob([`
+    let timer = null;
+    self.onmessage = function(e) {
+        if (e.data === 'start') {
+            if (!timer) {
+                timer = setInterval(function() {
+                    self.postMessage('tick');
+                }, 1000 / 60);
+            }
+        } else if (e.data === 'stop') {
+            if (timer) {
+                clearInterval(timer);
+                timer = null;
+            }
+        }
+    };
+`], { type: 'application/javascript' });
+
+const bgWorker = new Worker(URL.createObjectURL(workerBlob));
+bgWorker.onmessage = function() {
+    // Si la fenêtre est masquée ou réduite, le Worker prend le relais à 60 Hz !
+    if (document.hidden) {
+        processBackgroundCycle();
+    }
+};
+bgWorker.postMessage('start');
+
+function processBackgroundCycle() {
+    // 1. Inférence IA en tâche de fond si disponible
+    if (!isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
+        isAiProcessing = true;
+        try {
+            offCtx.drawImage(remoteVideo, 0, 0, 320, 240);
+            handsDetector.send({ image: offscreenCanvas }).then(() => {
+                isAiProcessing = false;
+            }).catch(() => {
+                isAiProcessing = false;
+            });
+            aiFrameCount++;
+        } catch(e) {
+            isAiProcessing = false;
+        }
+    }
+
+    // 2. Traitement continu du curseur et transmission souris
+    if (latestLandmarks) {
+        updateCursorAndGestures(latestLandmarks, latestHandedness);
+    }
+}
+
+// ============================================================================
+// --- 4. MOTEUR AUDIO SCI-FI HAPTIQUE ---
+// ============================================================================
+
 function playSciFiTone(freq, duration, type = 'sine') {
     if (!chkAudioFeedback.checked) return;
     try {
@@ -175,7 +327,10 @@ function playScrollTickSound() {
     }
 }
 
-// --- 2. WEBSOCKET SIGNALISATION & CONTRÔLE SOURIS ---
+// ============================================================================
+// --- 5. WEBSOCKET SIGNALISATION & CONTRÔLE SOURIS ---
+// ============================================================================
+
 function initWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}`;
@@ -284,7 +439,10 @@ function sendMouseScroll(delta) {
     ws.send(JSON.stringify({ type: 'mouse_scroll', delta }));
 }
 
-// --- 3. GESTION DE L'OFFRE WEBRTC (ZERO-LATENCY) ---
+// ============================================================================
+// --- 6. WEBRTC ZERO-LATENCY RECEIVER ---
+// ============================================================================
+
 async function handleWebRTCOffer(sdp) {
     if (peerConnection) {
         peerConnection.close();
@@ -307,7 +465,7 @@ async function handleWebRTCOffer(sdp) {
         remoteVideo.srcObject = event.streams[0];
         remoteVideo.play().catch(() => {});
 
-        // Annulation totale du délai de tampon WebRTC (Playout Delay = 0 ms)
+        // Zéro délai tampon WebRTC
         try {
             const receivers = peerConnection.getReceivers();
             for (const r of receivers) {
@@ -357,33 +515,37 @@ async function handleWebRTCOffer(sdp) {
     }
 }
 
-// --- 4. INITIALISATION MEDIAPIPE HANDS OPTIMISÉ ---
+// ============================================================================
+// --- 7. INITIALISATION MEDIAPIPE HANDS OPTIMISÉ ---
+// ============================================================================
+
 function initMediaPipe() {
     handsDetector = new Hands({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
     handsDetector.setOptions({
-        maxNumHands: 1, // 1 seule main ciblée pour 60 FPS constants
+        maxNumHands: 1,
         modelComplexity: 0,
         minDetectionConfidence: 0.55,
         minTrackingConfidence: 0.60
     });
 
     handsDetector.onResults(onHandResults);
-    console.log('🤖 MediaPipe Hands 60 FPS prêt');
+    console.log('🤖 MediaPipe Hands 60 FPS initialisé');
 }
 
-// --- 5. BOUCLE DE TRAITEMENT DÉCOUPLÉE (MIRACLE SOLUTION 60 FPS) ---
+// ============================================================================
+// --- 8. BOUCLE DÉCOUPLÉE 60 FPS (RENDU & IA INDÉPENDANTS) ---
+// ============================================================================
 
-// Boucle A : Détection IA non bloquante sur canvas réduit 320x240
 let isAiProcessing = false;
 
+// Boucle IA en arrière-plan
 async function runAiInference() {
-    if (!isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
+    if (!document.hidden && !isAiProcessing && remoteVideo.readyState >= 2 && !remoteVideo.paused && handsDetector) {
         isAiProcessing = true;
         try {
-            // Dessin ultra-rapide sur le canvas hors-écran 320x240
             offCtx.drawImage(remoteVideo, 0, 0, 320, 240);
             await handsDetector.send({ image: offscreenCanvas });
             aiFrameCount++;
@@ -391,47 +553,51 @@ async function runAiInference() {
         isAiProcessing = false;
     }
 
-    // Prochaine inférence calée sur le décodeur vidéo ou timer ultra-court
-    if ('requestVideoFrameCallback' in remoteVideo) {
-        remoteVideo.requestVideoFrameCallback(runAiInference);
-    } else {
-        setTimeout(runAiInference, 12);
+    if (!document.hidden) {
+        if ('requestVideoFrameCallback' in remoteVideo) {
+            remoteVideo.requestVideoFrameCallback(runAiInference);
+        } else {
+            setTimeout(runAiInference, 12);
+        }
     }
 }
 
-// Boucle B : Rendu Visuel & Mouvement Souris à 60 - 120 FPS continus
+// Reprise de l'inférence dès que la fenêtre redevient visible
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+        runAiInference();
+    }
+});
+
+// Boucle Rendu & Mouvement Souris (60 - 120 FPS continus)
 function renderLoop() {
     renderFrameCount++;
 
-    if (remoteVideo.readyState >= 2) {
-        if (overlayCanvas.width !== remoteVideo.videoWidth || overlayCanvas.height !== remoteVideo.videoHeight) {
-            overlayCanvas.width = remoteVideo.videoWidth || 640;
-            overlayCanvas.height = remoteVideo.videoHeight || 480;
-            teleRes.textContent = `${overlayCanvas.width}x${overlayCanvas.height}`;
+    if (!document.hidden) {
+        if (remoteVideo.readyState >= 2) {
+            if (overlayCanvas.width !== remoteVideo.videoWidth || overlayCanvas.height !== remoteVideo.videoHeight) {
+                overlayCanvas.width = remoteVideo.videoWidth || 640;
+                overlayCanvas.height = remoteVideo.videoHeight || 480;
+                teleRes.textContent = `${overlayCanvas.width}x${overlayCanvas.height}`;
+            }
         }
-    }
 
-    // Effacer le canvas pour la nouvelle frame à 60 FPS
-    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        drawActiveZoneGuide();
+        drawShockwaves();
 
-    // Dessiner le guide de zone active
-    drawActiveZoneGuide();
-
-    // Dessiner les ondes de choc
-    drawShockwaves();
-
-    // Dessiner les mains et interpoler le curseur
-    if (latestLandmarks) {
-        drawHolographicHand(latestLandmarks);
-        updateCursorAndGestures(latestLandmarks, latestHandedness);
-    } else {
-        updateMouseCardState('pause', 'EN ATTENTE DE MAIN', 'Place ta main devant la caméra');
+        if (latestLandmarks) {
+            drawHolographicHand(latestLandmarks);
+            updateCursorAndGestures(latestLandmarks, latestHandedness);
+        } else {
+            updateMouseCardState('pause', 'EN ATTENTE DE MAIN', 'Place ta main devant la caméra');
+        }
     }
 
     requestAnimationFrame(renderLoop);
 }
 
-// Compteur Télémétrie 1 seconde
+// Télémétrie 1s
 setInterval(() => {
     const now = performance.now();
     const elapsed = (now - lastFpsTime) / 1000;
@@ -442,7 +608,10 @@ setInterval(() => {
     lastFpsTime = now;
 }, 1000);
 
-// --- 6. RÉCEPTION DES RÉSULTATS MEDIAPIPE & BIOMÉTRIE 3D ---
+// ============================================================================
+// --- 9. RÉSULTATS MEDIAPIPE & BIOMÉTRIE 3D ---
+// ============================================================================
+
 function dist3d(p1, p2) {
     const dx = p1.x - p2.x;
     const dy = p1.y - p2.y;
@@ -471,7 +640,10 @@ function onHandResults(results) {
     latestHandedness = results.multiHandedness && results.multiHandedness[0] ? results.multiHandedness[0].label : 'Main';
 }
 
-// Mise à jour fluide du curseur et détection des gestes
+// ============================================================================
+// --- 10. GESTES & CONTRÔLE SOURIS AVEC FILTRE 1€ ET ZÉRO TREMBLEMENT ---
+// ============================================================================
+
 function updateCursorAndGestures(landmarks, handedness) {
     const wrist = landmarks[0];
     const thumbTip = landmarks[4];
@@ -490,21 +662,21 @@ function updateCursorAndGestures(landmarks, handedness) {
 
     coordZ.textContent = wrist.z ? wrist.z.toFixed(3) : '0.000';
 
-    // 1. Échelle de paume hybride 3D (Hauteur + Largeur)
+    // 1. Échelle de paume hybride 3D
     const palmWidth = dist3d(indexMcp, pinkyMcp);
     const palmHeight = dist3d(wrist, middleMcp);
     const palmScale = Math.max(0.045, (palmWidth * 1.1 + palmHeight) / 2);
 
-    // 2. Détection d'extension des doigts (Robuste et invariante aux rotations)
+    // 2. Extension des doigts
     const isIndexExtended = dist3d(indexTip, indexMcp) > dist3d(indexPip, indexMcp) * 1.20;
     const isMiddleExtended = dist3d(middleTip, middleMcp) > dist3d(middlePip, middleMcp) * 1.20;
     const isRingExtended = dist3d(ringTip, ringMcp) > dist3d(ringPip, ringMcp) * 1.20;
     const isPinkyExtended = dist3d(pinkyTip, pinkyMcp) > dist3d(pinkyPip, pinkyMcp) * 1.20;
 
-    // 3. Calcul du Pincement Normalisé (Pouce - Index)
+    // 3. Calcul du Pincement Normalisé
     const rawPinchRatio = dist3d(thumbTip, indexTip) / palmScale;
     const targetPinchPct = Math.max(0, Math.min(100, Math.round((0.68 - rawPinchRatio) / 0.44 * 100)));
-    smoothPinchPct = Math.round(smoothPinchPct * 0.50 + targetPinchPct * 0.50);
+    smoothPinchPct = Math.round(smoothPinchPct * 0.45 + targetPinchPct * 0.55);
 
     pinchPercent.textContent = `${smoothPinchPct}%`;
     pinchFill.style.width = `${smoothPinchPct}%`;
@@ -519,7 +691,7 @@ function updateCursorAndGestures(landmarks, handedness) {
         isPinchedState = false;
     }
 
-    // 4. Reconnaissance gestuelle
+    // 4. Détermination gestuelle
     let detectedRawGesture = 'OPEN';
     if (isPinchedState) {
         detectedRawGesture = 'PINCH';
@@ -548,7 +720,7 @@ function updateCursorAndGestures(landmarks, handedness) {
     }
     if (maxC >= 2) stableGesture = dominant;
 
-    // --- TRACKING CURSEUR SOURIS & ANTI-DÉRAPAGE ---
+    // --- TRACKING CURSEUR SOURIS & FILTRAGE 1€ SOYEUX ---
     const rawX = isPinchedState ? (thumbTip.x + indexTip.x) / 2 : indexTip.x;
     const rawY = isPinchedState ? (thumbTip.y + indexTip.y) / 2 : indexTip.y;
 
@@ -564,10 +736,15 @@ function updateCursorAndGestures(landmarks, handedness) {
     const boxY = (clampedY - minY) / (maxY - minY);
 
     const sens = parseFloat(rangeSensitivity.value) || 1.4;
-    targetCursorX = Math.max(0, Math.min(screenWidth, ((boxX - 0.5) * sens + 0.5) * screenWidth));
-    targetCursorY = Math.max(0, Math.min(screenHeight, ((boxY - 0.5) * sens + 0.5) * screenHeight));
+    const rawScreenX = Math.max(0, Math.min(screenWidth, ((boxX - 0.5) * sens + 0.5) * screenWidth));
+    const rawScreenY = Math.max(0, Math.min(screenHeight, ((boxY - 0.5) * sens + 0.5) * screenHeight));
 
-    // Système Anti-Dérapage au Clic
+    // Application du filtre 1€ : filtre adaptatif haute précision
+    const now = performance.now();
+    targetCursorX = filterX.filter(rawScreenX, now);
+    targetCursorY = filterY.filter(rawScreenY, now);
+
+    // Système Anti-Dérapage au Clic : fige la position au moment exact du pincement
     if (chkAntiSlip.checked && isPinchedState && !isScrollActive) {
         if (!isAnchorLocked) {
             lockedCursorX = smoothCursorX;
@@ -582,25 +759,27 @@ function updateCursorAndGestures(landmarks, handedness) {
         smoothCursorX = lockedCursorX;
         smoothCursorY = lockedCursorY;
     } else {
+        // Lissage doux exponentiel vers la cible filtrée
         const dx = targetCursorX - smoothCursorX;
         const dy = targetCursorY - smoothCursorY;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist >= 1.5) {
-            const smoothLevel = parseInt(rangeSmoothing.value) || 3;
-            const baseAlpha = [0.75, 0.55, 0.38, 0.25, 0.15][smoothLevel - 1] || 0.38;
-            const velocityBoost = Math.min(0.55, dist / 220);
-            const alpha = Math.min(0.95, baseAlpha + velocityBoost);
+        // Deadzone anti-tremblement : si micro-vibration < 1.8 px, le curseur ne bouge pas
+        if (dist >= 1.8) {
+            const level = parseInt(rangeSmoothing.value) || 3;
+            const preset = SMOOTH_PRESETS[level - 1] || SMOOTH_PRESETS[2];
+            const velocityBoost = Math.min(0.45, dist / 200);
+            const ease = Math.min(0.95, preset.ease + velocityBoost);
 
-            smoothCursorX += dx * alpha;
-            smoothCursorY += dy * alpha;
+            smoothCursorX += dx * ease;
+            smoothCursorY += dy * ease;
         }
     }
 
     cursorScreenX.textContent = `${Math.round(smoothCursorX)} px`;
     cursorScreenY.textContent = `${Math.round(smoothCursorY)} px`;
 
-    if (chkHoloReticle.checked) {
+    if (!document.hidden && chkHoloReticle.checked) {
         drawHoloReticle(rawX * overlayCanvas.width, rawY * overlayCanvas.height, isPinchedState, isScrollActive);
     }
 
@@ -620,7 +799,8 @@ function updateCursorAndGestures(landmarks, handedness) {
         const deltaScreenY = smoothCursorY - pinchStartScreenY;
         const deltaHandY = normY - pinchStartHandY;
 
-        if (!isScrollActive && (Math.abs(deltaScreenY) > 20 || Math.abs(deltaHandY) > 0.038)) {
+        // Détection de défilement : pincement maintenu + mouvement vertical
+        if (!isScrollActive && (Math.abs(deltaScreenY) > 22 || Math.abs(deltaHandY) > 0.04)) {
             isScrollActive = true;
             isAnchorLocked = false;
             scrollMeterBox.classList.add('active');
@@ -661,8 +841,8 @@ function updateCursorAndGestures(landmarks, handedness) {
         if (isScrollActive) {
             isScrollActive = false;
         } else if (pinchDuration < 380) {
-            const now = performance.now();
-            if (now - lastClickTime < 320) {
+            const clickNow = performance.now();
+            if (clickNow - lastClickTime < 320) {
                 sendMouseClick('double');
                 playDoubleClickSound();
                 spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#00ff88');
@@ -673,7 +853,7 @@ function updateCursorAndGestures(landmarks, handedness) {
                 spawnShockwave(rawX * overlayCanvas.width, rawY * overlayCanvas.height, '#ff0077');
                 updateMouseCardState('click', 'CLIC GAUCHE DÉCLENCHÉ', 'Clic précis envoyé');
             }
-            lastClickTime = now;
+            lastClickTime = clickNow;
         }
         isScrollActive = false;
         isAnchorLocked = false;
@@ -701,11 +881,11 @@ function updateCursorAndGestures(landmarks, handedness) {
         if (stableGesture === 'FIST') {
             updateMouseCardState('pause', 'CURSEUR EN PAUSE (POING)', 'Ouvrez la main ou pointez l\'index');
         } else if (isScrollActive) {
-            // Mode défilement : curseur stable
+            // Mode scroll : curseur fixe
         } else if (!isPinchedState || (performance.now() - pinchStartTime < 200)) {
             sendMouseMove(smoothCursorX, smoothCursorY);
             if (!isPinchedState && stableGesture !== 'PEACE') {
-                updateMouseCardState('nav', 'NAVIGATION SOURIS', 'Curseur synchronisé avec l\'index');
+                updateMouseCardState('nav', 'NAVIGATION SOURIS', 'Curseur doux synchronisé avec l\'index');
             }
         }
     } else {
@@ -749,7 +929,10 @@ function updateMouseCardState(state, title, sub) {
     }
 }
 
-// --- 7. RENDU HOLOGRAPHIQUE HAUTE PERFORMANCE (Zéro shadowBlur CPU) ---
+// ============================================================================
+// --- 11. RENDU HOLOGRAPHIQUE GPU (ZÉRO SHADOWBLUR CPU) ---
+// ============================================================================
+
 function drawActiveZoneGuide() {
     const w = overlayCanvas.width;
     const h = overlayCanvas.height;
@@ -795,7 +978,6 @@ function drawHoloReticle(x, y, isPinched, isScrolling) {
 
     const mainColor = isPinched ? '#ff0077' : (isScrolling ? '#ffb703' : '#00f2fe');
 
-    // Lueur double-stroke accélérée GPU (0ms CPU)
     ctx.beginPath();
     ctx.arc(0, 0, isPinched ? 10 : 16, 0, 2 * Math.PI);
     ctx.strokeStyle = isPinched ? 'rgba(255, 0, 119, 0.3)' : 'rgba(0, 242, 254, 0.3)';
@@ -872,7 +1054,7 @@ function drawHolographicHand(landmarks) {
         [5,9],[9,13],[13,17]
     ];
 
-    // 1. Couche de lueur externe ultra-rapide (GPU hardware)
+    // Lueur double-stroke GPU
     ctx.lineWidth = 6;
     ctx.strokeStyle = 'rgba(0, 242, 254, 0.25)';
     ctx.beginPath();
@@ -884,7 +1066,6 @@ function drawHolographicHand(landmarks) {
     }
     ctx.stroke();
 
-    // 2. Couche nette laser intérieure
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = '#00f2fe';
     ctx.beginPath();
@@ -896,7 +1077,6 @@ function drawHolographicHand(landmarks) {
     }
     ctx.stroke();
 
-    // 3. Articulations
     for (let j = 0; j < landmarks.length; j++) {
         const pt = landmarks[j];
         const px = pt.x * w;
@@ -956,7 +1136,10 @@ function updateGestureUI(gesture, handedness) {
     }
 }
 
-// --- 8. ÉCOUTEURS D'ÉVÉNEMENTS & RACCOURCIS ---
+// ============================================================================
+// --- 12. ÉCOUTEURS D'ÉVÉNEMENTS & RACCOURCIS ---
+// ============================================================================
+
 function setupEventListeners() {
     chkMouseControl.addEventListener('change', () => {
         lblMouseControl.textContent = chkMouseControl.checked ? 'CONTRÔLE SOURIS ACTIF' : 'CONTRÔLE SOURIS EN PAUSE';
@@ -977,9 +1160,8 @@ function setupEventListeners() {
         valSensitivity.textContent = `${rangeSensitivity.value}x`;
     });
 
-    const smoothLabels = ['MINIMAL', 'RÉACTIF', 'FLUIDE', 'TRÈS FLUIDE', 'ULTRA'];
     rangeSmoothing.addEventListener('input', () => {
-        valSmoothing.textContent = smoothLabels[parseInt(rangeSmoothing.value) - 1] || 'FLUIDE';
+        updateSmoothingProfile();
     });
 
     rangePinchThresh.addEventListener('input', () => {
@@ -991,15 +1173,17 @@ function setupEventListeners() {
     });
 }
 
-// --- 9. INITIALISATION AU CHARGEMENT ---
+// --- 13. DÉMARRAGE INITIAL ---
 window.addEventListener('DOMContentLoaded', () => {
+    updateSmoothingProfile();
     setupEventListeners();
     initWebSocket();
     initMediaPipe();
+    initBackgroundAudio();
 
-    // Lancer la boucle de rendu 60 FPS
+    // Boucle de rendu premier-plan 60 FPS
     requestAnimationFrame(renderLoop);
 
-    // Lancer l'inférence IA découplée
+    // Démarrage inférence IA
     runAiInference();
 });

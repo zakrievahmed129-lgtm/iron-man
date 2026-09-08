@@ -18,7 +18,7 @@ namespace Aegis
             Console.WriteLine(@"
 ╔══════════════════════════════════════════════════════════════╗
 ║        🛡️  A.E.G.I.S — SPATIAL HAND & MOUSE CONTROLLER        ║
-║           Contrôle Gestuel PC 60 FPS & Zéro Latence          ║
+║       Contrôle 60 FPS & Arrière-Plan Actif Même Réduit       ║
 ╚══════════════════════════════════════════════════════════════╝
 ");
             Console.ResetColor();
@@ -65,25 +65,24 @@ namespace Aegis
                 return;
             }
 
-            // Gestionnaire de sortie propre
             AppDomain.CurrentDomain.ProcessExit += (s, e) => Cleanup();
             Console.CancelKeyPress += (s, e) => {
                 Cleanup();
                 Environment.Exit(0);
             };
 
-            // Pause pour laisser le serveur initialiser les ports et le QR code
             Thread.Sleep(1500);
 
-            // 2. Ouvrir l'application PC en mode Application autonome (Port 8000 : 0 problème SSL, connexion immédiate)
+            // 2. Ouvrir l'application PC en mode autonome avec maintien d'activité en arrière-plan
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("💻 [2/3] Ouverture de la fenêtre A.E.G.I.S...");
+            Console.WriteLine("💻 [2/3] Ouverture de la fenêtre A.E.G.I.S (Mode Arrière-Plan persistant)...");
             Console.ResetColor();
 
             LaunchAppWindow("http://localhost:8000/pc.html");
 
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("⚡ [3/3] Synchronisation souris Win32 & flux direct activés !");
+            Console.WriteLine("⚡ [3/3] Contrôle souris Win32 60 FPS actif !");
+            Console.WriteLine("💡 ASTUCE : Vous pouvez minimiser la fenêtre, le contrôle continuera en tâche de fond !");
             Console.WriteLine("\n👉 Pour quitter, fermez cette fenêtre ou tapez 'Q'.\n");
             Console.ResetColor();
 
@@ -125,15 +124,17 @@ namespace Aegis
                 edgePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Microsoft\Edge\Application\msedge.exe");
             }
 
+            // Arguments pour désactiver la mise en veille et le bridage en arrière-plan lorsque la fenêtre est réduite
+            string browserArgs = "--app=" + url + " --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion,Translate";
+
             try
             {
-                // Préférer Google Chrome si présent pour une compatibilité WebRTC et MediaPipe maximale
                 if (File.Exists(chromePath))
                 {
                     Process.Start(new ProcessStartInfo
                     {
                         FileName = chromePath,
-                        Arguments = "--app=" + url + " --disable-features=Translate",
+                        Arguments = browserArgs,
                         UseShellExecute = false
                     });
                     return;
@@ -144,7 +145,7 @@ namespace Aegis
                     Process.Start(new ProcessStartInfo
                     {
                         FileName = edgePath,
-                        Arguments = "--app=" + url + " --disable-features=Translate",
+                        Arguments = browserArgs,
                         UseShellExecute = false
                     });
                     return;
